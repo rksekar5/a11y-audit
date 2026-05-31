@@ -1,0 +1,7 @@
+node_modules/
+test-results/
+playwright-report/
+reports/
+
+# Trend tracking data (local, uploaded as CI artifacts)
+.a11y-trends/history.json

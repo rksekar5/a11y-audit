@@ -1,0 +1,26 @@
+{
+  "name": "a11y-audit",
+  "version": "1.0.0",
+  "description": "AI-powered accessibility audit agent using Playwright + Copilot",
+  "scripts": {
+    "test": "playwright test",
+    "test:audit": "playwright test tests/w3c-demo-audit.spec.ts",
+    "test:deep": "playwright test tests/deep-accessibility.spec.ts",
+    "test:crawl": "playwright test tests/site-crawl.spec.ts",
+    "test:ci": "playwright test tests/ci-audit.spec.ts --project=chromium",
+    "test:chromium": "playwright test --project=chromium",
+    "report": "playwright show-report",
+    "trends": "npx ts-node scripts/show-trends.ts",
+    "trends:report": "npx ts-node scripts/generate-trend-report.ts"
+  },
+  "keywords": ["accessibility", "wcag", "a11y", "playwright", "audit", "axe-core"],
+  "license": "MIT",
+  "type": "commonjs",
+  "devDependencies": {
+    "@playwright/test": "^1.60.0",
+    "@axe-core/playwright": "^4.10.0",
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0",
+    "ts-node": "^10.9.0"
+  }
+}

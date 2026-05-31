@@ -1,0 +1,145 @@
+name: Accessibility Audit
+
+on:
+  pull_request:
+    branches: [main, master]
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'URL to audit (leave empty for configured default)'
+        required: false
+        type: string
+      max_pages:
+        description: 'Maximum pages to crawl'
+        required: false
+        type: number
+        default: 10
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  a11y-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Get git metadata
+        id: git-meta
+        run: |
+          echo "branch=${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}" >> "$GITHUB_OUTPUT"
+          echo "commit=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Run accessibility audit
+        id: ci-audit
+        run: |
+          npx playwright test tests/ci-audit.spec.ts --project=chromium || true
+          echo "report_exists=true" >> "$GITHUB_OUTPUT"
+        env:
+          AUDIT_URL: ${{ inputs.url || '' }}
+          AUDIT_MAX_PAGES: ${{ inputs.max_pages || '10' }}
+          GIT_BRANCH: ${{ steps.git-meta.outputs.branch }}
+          GIT_COMMIT: ${{ steps.git-meta.outputs.commit }}
+
+      - name: Read audit summary
+        id: read-summary
+        if: always()
+        run: |
+          if [ -f ".a11y-trends/ci-summary.md" ]; then
+            {
+              echo 'summary<<EOF'
+              cat .a11y-trends/ci-summary.md
+              echo 'EOF'
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "summary=## ♿ Accessibility Audit\n\nNo results generated." >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Comment on PR
+        if: github.event_name == 'pull_request' && always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let body = '## ♿ Accessibility Audit\n\nNo results generated.';
+            
+            try {
+              if (fs.existsSync('.a11y-trends/ci-summary.md')) {
+                body = fs.readFileSync('.a11y-trends/ci-summary.md', 'utf-8');
+              }
+            } catch (e) {
+              body += `\n\nError reading report: ${e.message}`;
+            }
+
+            // Find existing comment to update
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const botComment = comments.find(c => 
+              c.user.type === 'Bot' && c.body.includes('♿ Accessibility Audit')
+            );
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+      - name: Upload audit reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: a11y-reports
+          path: |
+            test-results/a11y-reports/
+            .a11y-trends/
+          retention-days: 30
+
+      - name: Upload trend data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: a11y-trend-data
+          path: .a11y-trends/history.json
+          retention-days: 90
+
+      - name: Fail on critical issues
+        if: always()
+        run: |
+          if [ -f ".a11y-trends/gate-result.txt" ]; then
+            RESULT=$(cat .a11y-trends/gate-result.txt)
+            if [ "$RESULT" = "FAILED" ]; then
+              echo "::error::Accessibility quality gate FAILED — critical or serious issues found"
+              exit 1
+            fi
+          fi

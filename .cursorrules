@@ -1,0 +1,43 @@
+# A11y Audit - Cursor Rules
+
+## Project
+Accessibility audit framework using Playwright + axe-core + 22 custom WCAG 2.0/2.1/2.2 checks.
+
+## Tech Stack
+- TypeScript (strict mode)
+- Playwright Test as the runner
+- @axe-core/playwright for baseline
+- Custom checks in `utils/accessibility-audit.ts`
+- JSON-based trend tracking
+
+## Code Style
+- Use `@playwright/test` imports, never raw playwright
+- Prefer `page.evaluate()` for DOM inspection over locator chains
+- Use the AccessibilityAudit class for all checks
+- CSS selectors generated inside page.evaluate, not from Node side
+- Violations use the A11yViolation interface with: rule, impact, description, wcagCriteria, elements, selectors, howToFix
+
+## Locator Priority (for identifying elements)
+1. getByRole()
+2. getByLabel()
+3. getByTestId()
+4. locator() with CSS (last resort)
+
+## File Layout
+- `tests/` — specs (deep-accessibility, site-crawl, ci-audit, w3c-demo-audit)
+- `utils/` — core engine, contrast-ratio, site-crawler, trend-tracker
+- `fixtures/` — Playwright fixtures (a11y.fixture.ts)
+- `scripts/` — CLI utilities
+- `.github/workflows/` — GitHub Actions CI
+
+## Key Patterns
+- All custom checks are private methods on AccessibilityAudit class
+- runFullAudit() orchestrates axe-core + all custom checks
+- SiteCrawler discovers pages via sitemap + link-following, then calls AccessibilityAudit per page
+- TrendTracker persists results as JSON and generates markdown/HTML reports
+- Contrast ratio uses WCAG relative luminance (sRGB linearization → L calculation → ratio formula)
+
+## Don't
+- Don't add external dependencies without asking
+- Don't modify the A11yViolation interface without updating all consumers
+- Don't use heuristics for contrast — use the actual formula in contrast-ratio.ts
