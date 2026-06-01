@@ -22,16 +22,18 @@ The AI agent navigates your site, reasons about what disabled users would experi
 
 ## What Makes This Different
 
-| | axe-core | BrowserStack | Lighthouse | **a11y-audit** |
-|---|---|---|---|---|
-| Automated rule checks | ✅ | ✅ | ✅ | ✅ |
-| Keyboard trap detection | ❌ | ❌ | ❌ | **✅ (actual Tab cycling)** |
-| AI-powered reasoning | ❌ | ❌ | ❌ | **✅** |
-| Context-aware analysis | ❌ | ❌ | ❌ | **✅** |
-| Site-wide crawling | ❌ | ✅ (paid) | ❌ | **✅** |
-| CI quality gates | ❌ | ✅ (paid) | ❌ | **✅** |
-| Trend tracking | ❌ | ✅ (paid) | ❌ | **✅** |
-| Cost | Free | $$$$ | Free | **Free** |
+| | axe-core (free) | Lighthouse | **a11y-audit** |
+|---|---|---|---|
+| Automated rule checks | ✅ | ✅ | ✅ |
+| Keyboard trap detection | ❌ | ❌ | **✅ (actual Tab cycling)** |
+| AI-powered reasoning | ❌ | ❌ | **✅** |
+| Context-aware analysis | ❌ | ❌ | **✅** |
+| Site-wide crawling | ❌ | ❌ | **✅** |
+| CI quality gates | ❌ | ❌ | **✅** |
+| Trend tracking | ❌ | ❌ | **✅** |
+| Cost | Free | Free | **Free** |
+
+> **Note:** Deque's paid platform (Axe DevTools, Axe Monitor, Axe Assistant) offers many of these capabilities. This table compares free/open-source tools only.
 
 ### The AI agent catches issues tools miss
 
