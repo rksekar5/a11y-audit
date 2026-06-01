@@ -14,7 +14,7 @@ import * as path from 'path';
  * 5. Writes a gate-result file for pass/fail decision
  */
 
-const TARGET_URL = process.env.AUDIT_URL || 'https://playwright.dev/';
+const TARGET_URL = process.env.AUDIT_URL || 'https://www.w3.org/WAI/demos/bad/before/home.html';
 const MAX_PAGES = parseInt(process.env.AUDIT_MAX_PAGES || '10', 10);
 const GIT_BRANCH = process.env.GIT_BRANCH || undefined;
 const GIT_COMMIT = process.env.GIT_COMMIT || undefined;

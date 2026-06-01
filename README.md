@@ -157,17 +157,18 @@ Block PRs that introduce accessibility regressions:
 
 ## Real-World Results
 
-Audit of **porsche.com/germany** found **29 violations** (2 critical, 22 serious):
+Audit of the **W3C WAI "Before" Demo** (intentionally inaccessible site) found **65 violations** (vs axe-core's 7):
 
 | Finding | WCAG | Severity |
 |---------|------|----------|
-| Keyboard trap in cookie consent layer | 2.1.2 | Critical |
-| Hero video autoplays with no pause control | 1.4.2 | Critical |
-| 10 clickable elements not keyboard accessible | 2.1.1 | Serious |
-| 7 links with no accessible name | 2.4.4 | Serious |
-| Hero heading contrast ratio 1.03:1 | 1.4.3 | Serious |
+| Keyboard trap — Tab cycles stuck in navigation | 2.1.2 | Critical |
+| 12 interactive elements not keyboard accessible | 2.1.1 | Serious |
+| Missing form labels on search and contact forms | 1.3.1 | Serious |
+| Heading hierarchy broken (h1 → h4 skip) | 1.3.1 | Serious |
+| Color contrast failures with opacity compositing | 1.4.3 | Serious |
+| Images missing alt text | 1.1.1 | Serious |
 
-*axe-core alone found only 6 of these 29 issues.*
+*axe-core alone found only 7 of these 65 issues — this tool finds 9× more.*
 
 ---
 

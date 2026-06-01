@@ -13,18 +13,18 @@ test.describe('Site Crawl Accessibility Audit', () => {
     fs.mkdirSync(TRENDS_DIR, { recursive: true });
   });
 
-  test('crawl and audit playwright.dev', async ({ page }, testInfo) => {
+  test('crawl and audit W3C BAD Demo', async ({ page }, testInfo) => {
     test.setTimeout(120_000); // 2 minutes for crawling
 
     const crawler = new SiteCrawler(page);
     const result = await crawler.crawl({
-      startUrls: ['https://playwright.dev/'],
+      startUrls: ['https://www.w3.org/WAI/demos/bad/before/home.html'],
       maxPages: 5,
-      sitemap: true,
+      sitemap: false,
       followLinks: true,
       wcagLevel: 'AA',
       delayBetweenPages: 1000,
-      excludePatterns: [/\/community/, /\/blog/],
+      includePattern: /w3\.org\/WAI\/demos\/bad\/before/,
       onProgress: (p) => {
         console.log(`[${p.pagesAudited}/${p.pagesDiscovered}] ${p.currentUrl}`);
       },
@@ -37,7 +37,7 @@ test.describe('Site Crawl Accessibility Audit', () => {
     // Record trends
     const tracker = new TrendTracker({
       storePath: path.join(TRENDS_DIR, 'history.json'),
-      projectName: 'playwright.dev',
+      projectName: 'w3c-bad-demo',
     });
     tracker.recordCrawl(result);
 

@@ -334,97 +334,444 @@ export class SiteCrawler {
  */
 export function generateCrawlReport(result: CrawlResult): string {
   const impactColors: Record<string, string> = {
-    critical: '#d32f2f',
-    serious: '#f57c00',
-    moderate: '#fbc02d',
-    minor: '#1976d2',
+    critical: '#dc2626',
+    serious: '#ea580c',
+    moderate: '#ca8a04',
+    minor: '#2563eb',
   };
+
+  const totalViolations = result.summary.totalViolations;
+  const gateStatus = result.summary.critical === 0 && result.summary.serious === 0 ? 'passed' : 'failed';
+
+  // Find worst page
+  const worstPage = result.pageResults.length > 0
+    ? result.pageResults.reduce((a, b) => a.totalViolations > b.totalViolations ? a : b)
+    : null;
+  const bestPage = result.pageResults.length > 0
+    ? result.pageResults.reduce((a, b) => a.totalViolations < b.totalViolations ? a : b)
+    : null;
 
   let html = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Site Accessibility Crawl Report</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Site Crawl Report — ${result.pagesAudited} Pages Audited</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"><\/script>
   <style>
-    body { font-family: system-ui, -apple-system, sans-serif; max-width: 1200px; margin: 0 auto; padding: 20px; background: #fafafa; }
-    h1 { color: #1a237e; }
-    h2 { color: #283593; margin-top: 30px; }
-    .meta { color: #666; margin-bottom: 20px; }
-    .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 20px 0; }
-    .summary-card { padding: 15px; border-radius: 8px; text-align: center; color: white; }
-    .page-card { border: 1px solid #ddd; border-radius: 8px; padding: 15px; margin: 10px 0; background: white; }
-    .page-card h3 { margin: 0 0 8px 0; font-size: 14px; }
-    .page-card a { color: #1565c0; text-decoration: none; word-break: break-all; }
-    .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; color: white; font-size: 11px; font-weight: bold; margin: 2px; }
-    .top-issues { background: white; border-radius: 8px; padding: 15px; margin: 15px 0; }
-    .top-issues li { padding: 5px 0; font-size: 14px; }
-    .page-score { font-size: 28px; font-weight: bold; }
-    .stat { display: inline-block; margin-right: 12px; font-size: 13px; }
-    .progress-bar { height: 6px; background: #e0e0e0; border-radius: 3px; overflow: hidden; margin-top: 8px; }
-    .progress-fill { height: 100%; transition: width 0.3s; }
+    :root {
+      --bg-primary: #0f172a;
+      --bg-secondary: #1e293b;
+      --bg-card: #1e293b;
+      --text-primary: #f1f5f9;
+      --text-secondary: #94a3b8;
+      --text-muted: #64748b;
+      --border: #334155;
+      --accent: #6366f1;
+      --success: #22c55e;
+      --warning: #eab308;
+      --danger: #ef4444;
+      --radius: 12px;
+    }
+    [data-theme="light"] {
+      --bg-primary: #f8fafc;
+      --bg-secondary: #ffffff;
+      --bg-card: #ffffff;
+      --text-primary: #0f172a;
+      --text-secondary: #475569;
+      --text-muted: #94a3b8;
+      --border: #e2e8f0;
+      --accent: #4f46e5;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      line-height: 1.6;
+      padding: 24px;
+      min-height: 100vh;
+    }
+    .container { max-width: 1400px; margin: 0 auto; }
+
+    /* Header */
+    .header {
+      display: flex; justify-content: space-between; align-items: flex-start;
+      margin-bottom: 32px; flex-wrap: wrap; gap: 16px;
+    }
+    .header h1 { font-size: 24px; font-weight: 700; color: var(--text-primary); }
+    .header .meta { color: var(--text-secondary); font-size: 13px; margin-top: 4px; }
+    .header .meta a { color: var(--accent); text-decoration: none; }
+    .header-actions { display: flex; gap: 8px; align-items: center; }
+    .btn {
+      padding: 8px 16px; border-radius: 8px; border: 1px solid var(--border);
+      background: var(--bg-secondary); color: var(--text-primary); font-size: 12px;
+      cursor: pointer; transition: all 0.2s; font-weight: 500;
+    }
+    .btn:hover { border-color: var(--accent); background: var(--accent); color: white; }
+    .theme-toggle { width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; padding: 0; font-size: 16px; }
+
+    /* Quality Gate Banner */
+    .quality-gate {
+      background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 16px 24px; margin-bottom: 24px; display: flex; align-items: center; gap: 12px;
+    }
+    .quality-gate.passed { border-left: 4px solid var(--success); }
+    .quality-gate.failed { border-left: 4px solid var(--danger); }
+    .quality-gate .icon { font-size: 24px; }
+    .quality-gate .label { font-weight: 600; font-size: 15px; }
+    .quality-gate .detail { color: var(--text-secondary); font-size: 13px; }
+
+    /* Summary Cards Row */
+    .summary-row {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 16px; margin-bottom: 24px;
+    }
+    .summary-card {
+      background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 20px; text-align: center; position: relative; overflow: hidden;
+    }
+    .summary-card::before {
+      content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px;
+    }
+    .summary-card.critical::before { background: ${impactColors.critical}; }
+    .summary-card.serious::before { background: ${impactColors.serious}; }
+    .summary-card.moderate::before { background: ${impactColors.moderate}; }
+    .summary-card.minor::before { background: ${impactColors.minor}; }
+    .summary-card.pages::before { background: var(--accent); }
+    .summary-card .count { font-size: 32px; font-weight: 700; margin-bottom: 4px; }
+    .summary-card .label { font-size: 12px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; font-weight: 500; }
+
+    /* Charts Row */
+    .charts-row {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px;
+    }
+    @media (max-width: 768px) { .charts-row { grid-template-columns: 1fr; } }
+    .chart-card {
+      background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 24px;
+    }
+    .chart-card h3 { font-size: 14px; color: var(--text-secondary); margin-bottom: 16px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px; }
+
+    /* Top Issues */
+    .top-issues-section {
+      background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 24px; margin-bottom: 24px;
+    }
+    .top-issues-section h3 { font-size: 14px; color: var(--text-secondary); margin-bottom: 16px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px; }
+    .top-issue-item {
+      display: flex; align-items: center; gap: 12px; padding: 10px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .top-issue-item:last-child { border-bottom: none; }
+    .top-issue-rank { width: 28px; height: 28px; border-radius: 50%; background: var(--bg-primary); display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; color: var(--text-secondary); flex-shrink: 0; }
+    .top-issue-name { flex: 1; font-size: 13px; font-weight: 500; }
+    .top-issue-count { font-size: 13px; font-weight: 700; color: var(--text-primary); }
+    .impact-badge {
+      display: inline-block; padding: 2px 8px; border-radius: 4px; color: white;
+      font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px;
+    }
+
+    /* Page Cards */
+    .pages-section {
+      background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius);
+      overflow: hidden; margin-bottom: 24px;
+    }
+    .pages-header {
+      padding: 16px 24px; border-bottom: 1px solid var(--border);
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .pages-header h3 { font-size: 15px; font-weight: 600; }
+    .sort-btns { display: flex; gap: 6px; }
+    .sort-btn {
+      padding: 4px 10px; border-radius: 6px; border: 1px solid var(--border);
+      background: transparent; color: var(--text-secondary); font-size: 11px;
+      cursor: pointer; transition: all 0.2s;
+    }
+    .sort-btn.active { background: var(--accent); color: white; border-color: var(--accent); }
+    .page-row {
+      padding: 16px 24px; border-bottom: 1px solid var(--border);
+      transition: background 0.15s; cursor: pointer;
+    }
+    .page-row:hover { background: var(--bg-primary); }
+    .page-row:last-child { border-bottom: none; }
+    .page-row-header {
+      display: flex; align-items: center; gap: 12px; margin-bottom: 8px;
+    }
+    .page-url { font-size: 13px; font-weight: 500; color: var(--accent); text-decoration: none; word-break: break-all; flex: 1; }
+    .page-url:hover { text-decoration: underline; }
+    .page-total { font-size: 20px; font-weight: 700; min-width: 40px; text-align: right; }
+    .page-badges { display: flex; gap: 6px; flex-wrap: wrap; }
+    .page-badge {
+      display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px;
+      border-radius: 6px; font-size: 11px; font-weight: 600;
+      background: var(--bg-primary); border: 1px solid var(--border);
+    }
+    .page-badge .dot { width: 8px; height: 8px; border-radius: 50%; }
+    .progress-bar { height: 4px; background: var(--bg-primary); border-radius: 2px; overflow: hidden; margin-top: 10px; }
+    .progress-fill { height: 100%; border-radius: 2px; transition: width 0.6s ease; }
+
+    /* Skipped Pages */
+    .skipped-section {
+      background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 24px; margin-bottom: 24px;
+    }
+    .skipped-section h3 { font-size: 14px; color: var(--text-secondary); margin-bottom: 12px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px; }
+    .skipped-item { font-size: 12px; color: var(--text-muted); padding: 4px 0; word-break: break-all; }
+
+    /* Footer */
+    .footer {
+      margin-top: 32px; text-align: center; color: var(--text-muted); font-size: 12px;
+      padding: 16px; border-top: 1px solid var(--border);
+    }
+    .footer a { color: var(--accent); text-decoration: none; }
   </style>
 </head>
 <body>
-  <h1>Site Accessibility Crawl Report</h1>
-  <div class="meta">
-    <p><strong>Crawl Start:</strong> ${result.startTime}</p>
-    <p><strong>Duration:</strong> ${(result.durationMs / 1000).toFixed(1)}s</p>
-    <p><strong>Pages Audited:</strong> ${result.pagesAudited}</p>
-    ${result.pagesSkipped.length > 0 ? `<p><strong>Pages Skipped:</strong> ${result.pagesSkipped.length}</p>` : ''}
-  </div>
-
-  <div class="summary">
-    <div class="summary-card" style="background:#1a237e">
-      <div class="page-score">${result.pagesAudited}</div>
-      <div>Pages</div>
-    </div>
-    <div class="summary-card" style="background:${impactColors.critical}">
-      <div class="page-score">${result.summary.critical}</div>
-      <div>Critical</div>
-    </div>
-    <div class="summary-card" style="background:${impactColors.serious}">
-      <div class="page-score">${result.summary.serious}</div>
-      <div>Serious</div>
-    </div>
-    <div class="summary-card" style="background:${impactColors.moderate}">
-      <div class="page-score">${result.summary.moderate}</div>
-      <div>Moderate</div>
-    </div>
-    <div class="summary-card" style="background:${impactColors.minor}">
-      <div class="page-score">${result.summary.minor}</div>
-      <div>Minor</div>
-    </div>
-  </div>
-
-  <h2>Top Issues Across All Pages</h2>
-  <div class="top-issues">
-    <ol>
-      ${result.summary.topIssues.map(issue => `
-        <li>
-          <span class="badge" style="background:${impactColors[issue.impact] || '#666'}">${issue.impact.toUpperCase()}</span>
-          <strong>${escapeHtml(issue.rule)}</strong> — ${issue.count} occurrence${issue.count > 1 ? 's' : ''}
-        </li>
-      `).join('')}
-    </ol>
-  </div>
-
-  <h2>Per-Page Results</h2>
-  ${result.pageResults.map(page => {
-    const maxIssues = Math.max(...result.pageResults.map(p => p.totalViolations), 1);
-    const severity = page.summary.critical > 0 ? 'critical' : page.summary.serious > 0 ? 'serious' : page.summary.moderate > 0 ? 'moderate' : 'minor';
-    return `
-    <div class="page-card">
-      <h3><a href="${escapeHtml(page.url)}" target="_blank">${escapeHtml(page.url)}</a></h3>
-      <span class="stat"><strong>${page.totalViolations}</strong> issues</span>
-      <span class="badge" style="background:${impactColors.critical}">${page.summary.critical} critical</span>
-      <span class="badge" style="background:${impactColors.serious}">${page.summary.serious} serious</span>
-      <span class="badge" style="background:${impactColors.moderate}">${page.summary.moderate} moderate</span>
-      <span class="badge" style="background:${impactColors.minor}">${page.summary.minor} minor</span>
-      <div class="progress-bar">
-        <div class="progress-fill" style="width:${(page.totalViolations / maxIssues) * 100}%;background:${impactColors[severity]}"></div>
+  <div class="container">
+    <!-- Header -->
+    <div class="header">
+      <div>
+        <h1>🕷️ Site Accessibility Crawl Report</h1>
+        <div class="meta">
+          ${result.pagesAudited} pages audited &nbsp;•&nbsp; ${(result.durationMs / 1000).toFixed(1)}s duration &nbsp;•&nbsp; ${result.startTime}
+          ${result.pagesSkipped.length > 0 ? `&nbsp;•&nbsp; ${result.pagesSkipped.length} skipped` : ''}
+        </div>
       </div>
-    </div>`;
-  }).join('')}
+      <div class="header-actions">
+        <button class="btn" onclick="exportCSV()">📄 CSV</button>
+        <button class="btn" onclick="exportJSON()">{ } JSON</button>
+        <button class="btn theme-toggle" onclick="toggleTheme()" title="Toggle theme">🌓</button>
+      </div>
+    </div>
+
+    <!-- Quality Gate -->
+    <div class="quality-gate ${gateStatus}">
+      <span class="icon">${gateStatus === 'passed' ? '✅' : '❌'}</span>
+      <div>
+        <div class="label">Quality Gate: ${gateStatus.toUpperCase()}</div>
+        <div class="detail">${gateStatus === 'failed' ? (result.summary.critical + result.summary.serious) + ' critical/serious issue(s) must be resolved' : 'No critical or serious issues found'} • ${totalViolations} total violation${totalViolations !== 1 ? 's' : ''} across ${result.pagesAudited} page${result.pagesAudited !== 1 ? 's' : ''}</div>
+      </div>
+    </div>
+
+    <!-- Summary Cards -->
+    <div class="summary-row">
+      <div class="summary-card pages">
+        <div class="count" style="color:var(--accent)">${result.pagesAudited}</div>
+        <div class="label">Pages Audited</div>
+      </div>
+      <div class="summary-card critical">
+        <div class="count" style="color:${impactColors.critical}">${result.summary.critical}</div>
+        <div class="label">Critical</div>
+      </div>
+      <div class="summary-card serious">
+        <div class="count" style="color:${impactColors.serious}">${result.summary.serious}</div>
+        <div class="label">Serious</div>
+      </div>
+      <div class="summary-card moderate">
+        <div class="count" style="color:${impactColors.moderate}">${result.summary.moderate}</div>
+        <div class="label">Moderate</div>
+      </div>
+      <div class="summary-card minor">
+        <div class="count" style="color:${impactColors.minor}">${result.summary.minor}</div>
+        <div class="label">Minor</div>
+      </div>
+      <div class="summary-card">
+        <div class="count" style="color:var(--text-primary)">${totalViolations}</div>
+        <div class="label">Total Issues</div>
+      </div>
+    </div>
+
+    <!-- Charts Row -->
+    <div class="charts-row">
+      <!-- Severity Breakdown -->
+      <div class="chart-card">
+        <h3>Severity Distribution</h3>
+        <canvas id="severityChart" style="max-height:220px"></canvas>
+      </div>
+
+      <!-- Issues Per Page -->
+      <div class="chart-card">
+        <h3>Issues Per Page</h3>
+        <canvas id="pagesChart" style="max-height:220px"></canvas>
+      </div>
+    </div>
+
+    <!-- Top Issues -->
+    <div class="top-issues-section">
+      <h3>Top Issues Across All Pages</h3>
+      ${result.summary.topIssues.map((issue, i) => `
+      <div class="top-issue-item">
+        <span class="top-issue-rank">${i + 1}</span>
+        <span class="impact-badge" style="background:${impactColors[issue.impact] || '#666'}">${issue.impact}</span>
+        <span class="top-issue-name">${escapeHtml(issue.rule)}</span>
+        <span class="top-issue-count">${issue.count}×</span>
+      </div>`).join('')}
+    </div>
+
+    <!-- Per-Page Results -->
+    <div class="pages-section">
+      <div class="pages-header">
+        <h3>Per-Page Results</h3>
+        <div class="sort-btns">
+          <button class="sort-btn active" onclick="sortPages('issues')">Most Issues</button>
+          <button class="sort-btn" onclick="sortPages('alpha')">A–Z</button>
+        </div>
+      </div>
+      ${result.pageResults
+        .sort((a, b) => b.totalViolations - a.totalViolations)
+        .map(page => {
+          const maxIssues = Math.max(...result.pageResults.map(p => p.totalViolations), 1);
+          const severity = page.summary.critical > 0 ? 'critical' : page.summary.serious > 0 ? 'serious' : page.summary.moderate > 0 ? 'moderate' : 'minor';
+          return `
+      <div class="page-row" data-url="${escapeHtml(page.url)}" data-issues="${page.totalViolations}">
+        <div class="page-row-header">
+          <a class="page-url" href="${escapeHtml(page.url)}" target="_blank">${escapeHtml(page.url)}</a>
+          <span class="page-total" style="color:${impactColors[severity]}">${page.totalViolations}</span>
+        </div>
+        <div class="page-badges">
+          ${page.summary.critical > 0 ? `<span class="page-badge"><span class="dot" style="background:${impactColors.critical}"></span>${page.summary.critical} critical</span>` : ''}
+          ${page.summary.serious > 0 ? `<span class="page-badge"><span class="dot" style="background:${impactColors.serious}"></span>${page.summary.serious} serious</span>` : ''}
+          ${page.summary.moderate > 0 ? `<span class="page-badge"><span class="dot" style="background:${impactColors.moderate}"></span>${page.summary.moderate} moderate</span>` : ''}
+          ${page.summary.minor > 0 ? `<span class="page-badge"><span class="dot" style="background:${impactColors.minor}"></span>${page.summary.minor} minor</span>` : ''}
+        </div>
+        <div class="progress-bar">
+          <div class="progress-fill" style="width:${(page.totalViolations / maxIssues) * 100}%;background:${impactColors[severity]}"></div>
+        </div>
+      </div>`;
+        }).join('')}
+    </div>
+
+    ${result.pagesSkipped.length > 0 ? `
+    <!-- Skipped Pages -->
+    <div class="skipped-section">
+      <h3>Skipped Pages (${result.pagesSkipped.length})</h3>
+      ${result.pagesSkipped.map(url => `<div class="skipped-item">${escapeHtml(url)}</div>`).join('')}
+    </div>` : ''}
+
+    <!-- Footer -->
+    <div class="footer">
+      Generated by <a href="https://github.com/rksekar5/a11y-audit">a11y-audit</a> • AI-Powered Accessibility Auditor
+      ${worstPage ? `<br>Worst page: ${escapeHtml(worstPage.url)} (${worstPage.totalViolations} issues)` : ''}
+      ${bestPage ? ` • Best page: ${escapeHtml(bestPage.url)} (${bestPage.totalViolations} issues)` : ''}
+    </div>
+  </div>
+
+  <script>
+    // Severity doughnut chart
+    const sevCtx = document.getElementById('severityChart').getContext('2d');
+    new Chart(sevCtx, {
+      type: 'doughnut',
+      data: {
+        labels: ['Critical', 'Serious', 'Moderate', 'Minor'],
+        datasets: [{
+          data: [${result.summary.critical}, ${result.summary.serious}, ${result.summary.moderate}, ${result.summary.minor}],
+          backgroundColor: ['${impactColors.critical}', '${impactColors.serious}', '${impactColors.moderate}', '${impactColors.minor}'],
+          borderWidth: 0,
+          spacing: 2
+        }]
+      },
+      options: {
+        responsive: true,
+        cutout: '65%',
+        plugins: {
+          legend: { position: 'bottom', labels: { color: '#94a3b8', padding: 16, usePointStyle: true, pointStyle: 'circle' } }
+        }
+      }
+    });
+
+    // Pages bar chart
+    const pagesCtx = document.getElementById('pagesChart').getContext('2d');
+    const pageData = ${JSON.stringify(result.pageResults.sort((a, b) => b.totalViolations - a.totalViolations).slice(0, 10).map(p => ({
+      url: p.url.replace(/https?:\/\/[^/]+/, '').substring(0, 30) || '/',
+      total: p.totalViolations,
+      critical: p.summary.critical,
+      serious: p.summary.serious,
+      moderate: p.summary.moderate,
+      minor: p.summary.minor
+    })))};
+    new Chart(pagesCtx, {
+      type: 'bar',
+      data: {
+        labels: pageData.map(p => p.url),
+        datasets: [
+          { label: 'Critical', data: pageData.map(p => p.critical), backgroundColor: '${impactColors.critical}', borderRadius: 4 },
+          { label: 'Serious', data: pageData.map(p => p.serious), backgroundColor: '${impactColors.serious}', borderRadius: 4 },
+          { label: 'Moderate', data: pageData.map(p => p.moderate), backgroundColor: '${impactColors.moderate}', borderRadius: 4 },
+          { label: 'Minor', data: pageData.map(p => p.minor), backgroundColor: '${impactColors.minor}', borderRadius: 4 }
+        ]
+      },
+      options: {
+        responsive: true,
+        indexAxis: 'y',
+        scales: {
+          x: { stacked: true, grid: { color: 'rgba(100,116,139,0.1)' }, ticks: { color: '#94a3b8' } },
+          y: { stacked: true, grid: { display: false }, ticks: { color: '#94a3b8', font: { size: 10 } } }
+        },
+        plugins: {
+          legend: { position: 'bottom', labels: { color: '#94a3b8', padding: 12, usePointStyle: true, pointStyle: 'circle' } }
+        }
+      }
+    });
+
+    // Sort pages
+    function sortPages(mode) {
+      document.querySelectorAll('.sort-btn').forEach(b => b.classList.remove('active'));
+      event.target.classList.add('active');
+      const container = document.querySelector('.pages-section');
+      const rows = Array.from(container.querySelectorAll('.page-row'));
+      rows.sort((a, b) => {
+        if (mode === 'issues') return parseInt(b.dataset.issues) - parseInt(a.dataset.issues);
+        return a.dataset.url.localeCompare(b.dataset.url);
+      });
+      const header = container.querySelector('.pages-header');
+      rows.forEach(r => container.appendChild(r));
+    }
+
+    // Theme toggle
+    function toggleTheme() {
+      const body = document.body;
+      const current = body.getAttribute('data-theme');
+      body.setAttribute('data-theme', current === 'light' ? 'dark' : 'light');
+      localStorage.setItem('a11y-crawl-theme', body.getAttribute('data-theme'));
+    }
+    const saved = localStorage.getItem('a11y-crawl-theme');
+    if (saved) document.body.setAttribute('data-theme', saved);
+
+    // Export CSV
+    function exportCSV() {
+      const rows = [['URL', 'Total', 'Critical', 'Serious', 'Moderate', 'Minor']];
+      document.querySelectorAll('.page-row').forEach(row => {
+        const url = row.dataset.url;
+        const badges = row.querySelectorAll('.page-badge');
+        let c = 0, s = 0, m = 0, mi = 0;
+        badges.forEach(b => {
+          const text = b.textContent.trim();
+          if (text.includes('critical')) c = parseInt(text);
+          else if (text.includes('serious')) s = parseInt(text);
+          else if (text.includes('moderate')) m = parseInt(text);
+          else if (text.includes('minor')) mi = parseInt(text);
+        });
+        rows.push([url, row.dataset.issues, c, s, m, mi].map(v => '"' + String(v).replace(/"/g, '""') + '"'));
+      });
+      const csv = rows.map(r => r.join(',')).join('\\n');
+      download(csv, 'crawl-report.csv', 'text/csv');
+    }
+
+    // Export JSON
+    function exportJSON() {
+      const data = ${JSON.stringify({ pagesAudited: result.pagesAudited, duration: result.durationMs, summary: result.summary, pages: result.pageResults.map(p => ({ url: p.url, total: p.totalViolations, critical: p.summary.critical, serious: p.summary.serious, moderate: p.summary.moderate, minor: p.summary.minor })) })};
+      download(JSON.stringify(data, null, 2), 'crawl-report.json', 'application/json');
+    }
+
+    function download(content, filename, type) {
+      const blob = new Blob([content], { type });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = filename;
+      a.click();
+    }
+  <\/script>
 </body>
 </html>`;
 
