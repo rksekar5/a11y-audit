@@ -92,33 +92,58 @@ export class AccessibilityAudit {
     await this.runAxeCore(level, exclude);
 
     // 2. Custom checks that axe-core misses
-    await this.checkHeadingHierarchy();
-    await this.checkKeyboardNavigation();
-    await this.checkKeyboardTraps();
-    await this.checkReverseTabNavigation();
-    await this.checkKeyboardActivation();
-    await this.checkFocusVisibility();
-    await this.checkLinkPurpose();
-    await this.checkColorContrast();
-    await this.checkTouchTargetSize();
-    await this.checkFormLabels();
-    await this.checkAriaPatterns();
-    await this.checkContentReflow();
-    await this.checkTextSpacing();
-    await this.checkMotionAndAnimation();
-    await this.checkLandmarks();
-    await this.checkLanguageAttributes();
-    await this.checkTabIndex();
-    await this.checkImageAccessibility();
-    await this.checkTableAccessibility();
-    await this.checkAutoplayMedia();
-    await this.checkStatusMessages();
-    await this.checkDuplicateIds();
+    // Each check is wrapped in try/catch so one failure doesn't kill the whole audit
+    const checks: Array<{ name: string; fn: () => Promise<void> }> = [
+      { name: 'heading-hierarchy', fn: () => this.checkHeadingHierarchy() },
+      { name: 'keyboard-navigation', fn: () => this.checkKeyboardNavigation() },
+      { name: 'keyboard-traps', fn: () => this.checkKeyboardTraps() },
+      { name: 'reverse-tab-navigation', fn: () => this.checkReverseTabNavigation() },
+      { name: 'keyboard-activation', fn: () => this.checkKeyboardActivation() },
+      { name: 'focus-visibility', fn: () => this.checkFocusVisibility() },
+      { name: 'link-purpose', fn: () => this.checkLinkPurpose() },
+      { name: 'color-contrast', fn: () => this.checkColorContrast() },
+      { name: 'touch-target-size', fn: () => this.checkTouchTargetSize() },
+      { name: 'form-labels', fn: () => this.checkFormLabels() },
+      { name: 'aria-patterns', fn: () => this.checkAriaPatterns() },
+      { name: 'content-reflow', fn: () => this.checkContentReflow() },
+      { name: 'text-spacing', fn: () => this.checkTextSpacing() },
+      { name: 'motion-animation', fn: () => this.checkMotionAndAnimation() },
+      { name: 'landmarks', fn: () => this.checkLandmarks() },
+      { name: 'language-attributes', fn: () => this.checkLanguageAttributes() },
+      { name: 'tabindex', fn: () => this.checkTabIndex() },
+      { name: 'image-accessibility', fn: () => this.checkImageAccessibility() },
+      { name: 'table-accessibility', fn: () => this.checkTableAccessibility() },
+      { name: 'autoplay-media', fn: () => this.checkAutoplayMedia() },
+      { name: 'status-messages', fn: () => this.checkStatusMessages() },
+      { name: 'duplicate-ids', fn: () => this.checkDuplicateIds() },
+    ];
 
     if (options?.includeExperimental) {
-      await this.checkReadingOrder();
-      await this.checkCognitiveLoad();
+      checks.push(
+        { name: 'reading-order', fn: () => this.checkReadingOrder() },
+        { name: 'cognitive-load', fn: () => this.checkCognitiveLoad() },
+      );
     }
+
+    for (const check of checks) {
+      try {
+        await check.fn();
+      } catch (error) {
+        // Record the failure as a minor violation so it's visible in the report
+        this.violations.push({
+          rule: `check-error-${check.name}`,
+          impact: 'minor',
+          description: `Custom check "${check.name}" failed to execute: ${error instanceof Error ? error.message : String(error)}`,
+          wcagCriteria: [],
+          elements: [],
+          selectors: [],
+          howToFix: 'This is an internal audit error — the check could not complete. Try re-running.',
+        });
+      }
+    }
+
+    // Deduplicate violations: same rule + same first element = duplicate
+    this.deduplicateViolations();
 
     // Capture screenshots for visual-category violations
     if (options?.screenshotDir) {
@@ -184,6 +209,37 @@ export class AccessibilityAudit {
         // Element not found or not screenshotable — skip silently
       }
     }
+  }
+
+  /**
+   * Remove duplicate violations (same rule + same first element).
+   * Keeps the higher-impact duplicate when both axe-core and custom checks find the same issue.
+   */
+  private deduplicateViolations() {
+    const seen = new Map<string, number>(); // key -> index in unique array
+    const unique: A11yViolation[] = [];
+    const impactOrder: Record<string, number> = { critical: 4, serious: 3, moderate: 2, minor: 1 };
+
+    for (const v of this.violations) {
+      // Create a dedup key from the rule base name and first element
+      const ruleBase = v.rule.replace(/^axe-/, ''); // normalize axe- prefix
+      const firstElement = (v.elements[0] || '').substring(0, 100);
+      const key = `${ruleBase}::${firstElement}`;
+
+      const existingIdx = seen.get(key);
+      if (existingIdx !== undefined) {
+        // Keep the higher-impact one
+        const existing = unique[existingIdx];
+        if ((impactOrder[v.impact] || 0) > (impactOrder[existing.impact] || 0)) {
+          unique[existingIdx] = v;
+        }
+      } else {
+        seen.set(key, unique.length);
+        unique.push(v);
+      }
+    }
+
+    this.violations = unique;
   }
 
   private async runAxeCore(level: string, exclude: string[]) {
@@ -367,7 +423,13 @@ export class AccessibilityAudit {
         const hasRole = el.hasAttribute('role');
         const hasTabIndex = el.hasAttribute('tabindex');
 
-        if ((hasClickCursor || hasClickHandler) && !hasRole && !hasTabIndex) {
+        // Skip if element is inside an interactive ancestor (a, button, label, summary)
+        const interactiveAncestor = el.closest('a, button, label, summary, [role="button"], [role="link"], [role="tab"], [tabindex]');
+        if (interactiveAncestor && interactiveAncestor !== el) continue;
+
+        // Only flag if it has an explicit click handler (not just cursor: pointer from CSS)
+        // cursor: pointer alone is too noisy — many CSS frameworks add it to styled elements
+        if (hasClickHandler && !hasRole && !hasTabIndex) {
           issues.push({ html: el.outerHTML.substring(0, 150), selector: getCssSelector(el) });
         }
       }
@@ -608,31 +670,58 @@ export class AccessibilityAudit {
 
   /**
    * WCAG 2.4.7 — Focus must be visible
+   * Actually focuses elements to check their focused state styles.
    */
   private async checkFocusVisibility() {
+    // Check by actually focusing elements and comparing styles
     const focusIssues = await this.page.evaluate(() => {
       const issues: string[] = [];
       const focusableElements = document.querySelectorAll(
         'a[href], button, input, select, textarea, [tabindex="0"]'
       );
 
-      for (const el of focusableElements) {
-        const styles = window.getComputedStyle(el);
-        const focusStyles = window.getComputedStyle(el, ':focus');
+      // Only check a sample to avoid performance issues
+      const sample = Array.from(focusableElements).filter(
+        el => (el as HTMLElement).offsetParent !== null // visible only
+      ).slice(0, 20);
 
-        // Check if outline is explicitly removed
-        if (styles.outlineStyle === 'none' && styles.outlineWidth === '0px') {
-          // Check if there's a visible alternative (box-shadow, border change, etc.)
-          // This is a heuristic — may have false positives
-          const hasBoxShadow = styles.boxShadow !== 'none';
-          const hasBorder = styles.borderStyle !== 'none' && styles.borderWidth !== '0px';
+      for (const el of sample) {
+        const htmlEl = el as HTMLElement;
 
-          if (!hasBoxShadow && !hasBorder) {
-            issues.push(el.outerHTML.substring(0, 150));
-          }
+        // Record unfocused styles
+        const beforeStyles = window.getComputedStyle(el);
+        const beforeOutline = beforeStyles.outlineStyle + beforeStyles.outlineWidth + beforeStyles.outlineColor;
+        const beforeBoxShadow = beforeStyles.boxShadow;
+        const beforeBorder = beforeStyles.borderStyle + beforeStyles.borderWidth + beforeStyles.borderColor;
+        const beforeBg = beforeStyles.backgroundColor;
+
+        // Actually focus the element
+        htmlEl.focus();
+
+        // Read focused styles
+        const afterStyles = window.getComputedStyle(el);
+        const afterOutline = afterStyles.outlineStyle + afterStyles.outlineWidth + afterStyles.outlineColor;
+        const afterBoxShadow = afterStyles.boxShadow;
+        const afterBorder = afterStyles.borderStyle + afterStyles.borderWidth + afterStyles.borderColor;
+        const afterBg = afterStyles.backgroundColor;
+
+        // Check if anything visually changed when focused
+        const hasOutline = afterStyles.outlineStyle !== 'none' && afterStyles.outlineWidth !== '0px';
+        const outlineChanged = afterOutline !== beforeOutline;
+        const shadowChanged = afterBoxShadow !== beforeBoxShadow;
+        const borderChanged = afterBorder !== beforeBorder;
+        const bgChanged = afterBg !== beforeBg;
+
+        const hasFocusIndicator = hasOutline || outlineChanged || shadowChanged || borderChanged || bgChanged;
+
+        if (!hasFocusIndicator) {
+          issues.push(el.outerHTML.substring(0, 150));
         }
+
+        // Blur so we don't affect subsequent checks
+        htmlEl.blur();
       }
-      return issues.slice(0, 10);
+      return issues;
     });
 
     // Check CSS for global focus removal
@@ -641,7 +730,7 @@ export class AccessibilityAudit {
         try {
           for (const rule of sheet.cssRules) {
             const text = rule.cssText;
-            if (text.includes(':focus') && text.includes('outline: none') || text.includes('outline:none') || text.includes('outline: 0')) {
+            if (text.includes(':focus') && (text.includes('outline: none') || text.includes('outline:none') || text.includes('outline: 0'))) {
               if (text.startsWith('*') || text.startsWith(':focus') || text.startsWith('a:focus') || text.startsWith('button:focus')) {
                 return true;
               }

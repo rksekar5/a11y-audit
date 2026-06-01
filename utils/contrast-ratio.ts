@@ -220,23 +220,54 @@ export function checkContrast(
 
 /**
  * Script to inject into page.evaluate() for extracting element contrast data.
- * Returns computed colors by walking up the DOM for effective background.
+ * Returns computed colors by walking up the DOM for effective background,
+ * compositing semi-transparent layers along the way.
  */
 export const CONTRAST_EXTRACTION_SCRIPT = `(() => {
+  function parseRGBA(color) {
+    if (!color || color === 'transparent' || color === 'rgba(0, 0, 0, 0)') return null;
+    const match = color.match(/rgba?\\(\\s*(\\d+)\\s*,\\s*(\\d+)\\s*,\\s*(\\d+)(?:\\s*,\\s*([\\d.]+))?\\s*\\)/);
+    if (!match) return null;
+    return { r: +match[1], g: +match[2], b: +match[3], a: match[4] !== undefined ? +match[4] : 1 };
+  }
+
+  function compositeOver(fg, bg) {
+    // Source-over alpha compositing
+    const a = fg.a + bg.a * (1 - fg.a);
+    if (a === 0) return { r: 0, g: 0, b: 0, a: 0 };
+    return {
+      r: Math.round((fg.r * fg.a + bg.r * bg.a * (1 - fg.a)) / a),
+      g: Math.round((fg.g * fg.a + bg.g * bg.a * (1 - fg.a)) / a),
+      b: Math.round((fg.b * fg.a + bg.b * bg.a * (1 - fg.a)) / a),
+      a,
+    };
+  }
+
   function getEffectiveBackgroundColor(el) {
+    // Walk up the tree, collecting background layers, then composite them
+    const layers = [];
     let current = el;
-    let bgColor = null;
     while (current && current !== document.documentElement) {
       const style = window.getComputedStyle(current);
       const bg = style.backgroundColor;
-      if (bg && bg !== 'transparent' && bg !== 'rgba(0, 0, 0, 0)') {
-        bgColor = bg;
-        break;
+      const parsed = parseRGBA(bg);
+      if (parsed) {
+        layers.push(parsed);
+        // If this layer is fully opaque, no need to go further
+        if (parsed.a >= 1) break;
       }
       current = current.parentElement;
     }
-    // Default to white if no background found
-    return bgColor || 'rgb(255, 255, 255)';
+
+    // If we didn't find any opaque background, assume white canvas
+    let effective = { r: 255, g: 255, b: 255, a: 1 };
+
+    // Composite from bottom (furthest ancestor) to top (closest parent)
+    for (let i = layers.length - 1; i >= 0; i--) {
+      effective = compositeOver(layers[i], effective);
+    }
+
+    return 'rgb(' + effective.r + ', ' + effective.g + ', ' + effective.b + ')';
   }
 
   function getContrastData() {

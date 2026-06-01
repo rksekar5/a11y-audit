@@ -1,6 +1,9 @@
 import { test, expect } from '@playwright/test';
 import { AccessibilityAudit, generateA11yReport, A11yAuditResult } from '../utils/accessibility-audit';
 
+const TARGET_URL = process.env.AUDIT_URL || 'https://playwright.dev/';
+const DOCS_URL = process.env.AUDIT_DOCS_URL || 'https://playwright.dev/docs/intro';
+
 /**
  * Comprehensive accessibility audit tests that replicate BrowserStack-level
  * WCAG checking. Runs axe-core + 18 additional custom checks covering:
@@ -32,7 +35,7 @@ test.describe('Deep Accessibility Audit (WCAG 2.0/2.1/2.2)', () => {
   });
 
   test('full WCAG AA audit — homepage', async ({ page }, testInfo) => {
-    await page.goto('https://playwright.dev/');
+    await page.goto(TARGET_URL);
 
     const results = await audit.runFullAudit({
       wcagLevel: 'AA',
@@ -65,7 +68,7 @@ test.describe('Deep Accessibility Audit (WCAG 2.0/2.1/2.2)', () => {
   });
 
   test('full WCAG AA audit — docs page', async ({ page }, testInfo) => {
-    await page.goto('https://playwright.dev/docs/intro');
+    await page.goto(DOCS_URL);
 
     const results = await audit.runFullAudit({
       wcagLevel: 'AA',
@@ -96,9 +99,9 @@ test.describe('Deep Accessibility Audit (WCAG 2.0/2.1/2.2)', () => {
 
   test('audit multiple pages and aggregate results', async ({ page }, testInfo) => {
     const urls = [
-      'https://playwright.dev/',
-      'https://playwright.dev/docs/intro',
-      'https://playwright.dev/docs/api/class-page',
+      TARGET_URL,
+      DOCS_URL,
+      `${new URL(TARGET_URL).origin}/docs/api/class-page`,
     ];
 
     const allResults: A11yAuditResult[] = [];
@@ -141,7 +144,7 @@ test.describe('Deep Accessibility Audit (WCAG 2.0/2.1/2.2)', () => {
   });
 
   test('keyboard navigation audit', async ({ page }) => {
-    await page.goto('https://playwright.dev/');
+    await page.goto(TARGET_URL);
 
     // Tab through the page and verify focus is always visible and logical
     const focusOrder: string[] = [];
@@ -180,7 +183,7 @@ test.describe('Deep Accessibility Audit (WCAG 2.0/2.1/2.2)', () => {
   });
 
   test('viewport reflow at 320px (WCAG 1.4.10)', async ({ page }) => {
-    await page.goto('https://playwright.dev/');
+    await page.goto(TARGET_URL);
 
     // Test at 320px width (equivalent to 400% zoom on 1280px viewport)
     await page.setViewportSize({ width: 320, height: 568 });
@@ -196,7 +199,7 @@ test.describe('Deep Accessibility Audit (WCAG 2.0/2.1/2.2)', () => {
   });
 
   test('text spacing override does not clip content (WCAG 1.4.12)', async ({ page }) => {
-    await page.goto('https://playwright.dev/');
+    await page.goto(TARGET_URL);
 
     // Apply WCAG 1.4.12 required text spacing
     await page.addStyleTag({
