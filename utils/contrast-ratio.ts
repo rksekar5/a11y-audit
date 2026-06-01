@@ -337,11 +337,19 @@ export const CONTRAST_EXTRACTION_SCRIPT = `(() => {
   }
 
   function getEffectiveBackgroundColor(el) {
-    // Walk up the tree, collecting background layers, then composite them
+    // Walk up the tree, collecting background layers and opacity, then composite
     const layers = [];
     let current = el;
+    let cumulativeOpacity = 1;
     while (current && current !== document.documentElement) {
       const style = window.getComputedStyle(current);
+
+      // Accumulate opacity from ancestors (opacity affects both fg and bg perception)
+      const elOpacity = parseFloat(style.opacity);
+      if (!isNaN(elOpacity) && elOpacity < 1) {
+        cumulativeOpacity *= elOpacity;
+      }
+
       const bg = style.backgroundColor;
       const parsed = parseRGBA(bg);
       if (parsed) {
@@ -360,7 +368,7 @@ export const CONTRAST_EXTRACTION_SCRIPT = `(() => {
       effective = compositeOver(layers[i], effective);
     }
 
-    return 'rgb(' + effective.r + ', ' + effective.g + ', ' + effective.b + ')';
+    return { color: 'rgb(' + effective.r + ', ' + effective.g + ', ' + effective.b + ')', opacity: cumulativeOpacity };
   }
 
   function getContrastData() {
@@ -382,12 +390,14 @@ export const CONTRAST_EXTRACTION_SCRIPT = `(() => {
 
       const style = window.getComputedStyle(el);
       const color = style.color;
-      const bgColor = getEffectiveBackgroundColor(el);
+      const bgResult = getEffectiveBackgroundColor(el);
+      const bgColor = bgResult.color;
+      const opacity = bgResult.opacity;
       const fontSize = style.fontSize;
       const fontWeight = style.fontWeight;
 
       // Deduplicate by color+bg+size combination
-      const key = color + '|' + bgColor + '|' + fontSize + '|' + fontWeight;
+      const key = color + '|' + bgColor + '|' + fontSize + '|' + fontWeight + '|' + opacity;
       if (processed.has(key)) continue;
       processed.add(key);
 
@@ -404,6 +414,7 @@ export const CONTRAST_EXTRACTION_SCRIPT = `(() => {
         html: el.outerHTML.substring(0, 150),
         color,
         bgColor,
+        opacity,
         fontSize,
         fontWeight,
         text: text.substring(0, 50),

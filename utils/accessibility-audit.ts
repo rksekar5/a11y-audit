@@ -645,78 +645,115 @@ export class AccessibilityAudit {
 
   /**
    * WCAG 2.1.1 — Enter/Space activation on interactive elements
-   * Verifies that elements with button role or tabindex respond to keyboard activation
+   * Actually focuses elements and presses Enter/Space to verify they respond,
+   * instead of checking for inline handler attributes (which misses addEventListener, React, etc.)
    */
   private async checkKeyboardActivation() {
+    // Find custom interactive elements (non-native) that claim to be interactive
     const customButtons = await this.page.evaluate(() => {
+      function getCssSelector(el: Element): string {
+        if (el.id) return '#' + CSS.escape(el.id);
+        const parts: string[] = [];
+        let current: Element | null = el;
+        while (current && current.nodeType === 1) {
+          let selector = current.tagName.toLowerCase();
+          if (current.id) { parts.unshift('#' + CSS.escape(current.id)); break; }
+          const parent: Element | null = current.parentElement;
+          if (parent) {
+            const siblings = Array.from(parent.children).filter((s: Element) => s.tagName === current!.tagName);
+            if (siblings.length > 1) selector += ':nth-of-type(' + (siblings.indexOf(current!) + 1) + ')';
+          }
+          parts.unshift(selector);
+          current = parent;
+          if (parts.length >= 4) break;
+        }
+        return parts.join(' > ');
+      }
+
       const elements = document.querySelectorAll(
-        '[role="button"], [role="link"], [tabindex="0"][onclick], div[onclick], span[onclick]'
+        '[role="button"], [role="link"], [tabindex="0"]'
       );
       return Array.from(elements)
         .filter(el => {
           const htmlEl = el as HTMLElement;
-          return htmlEl.offsetParent !== null; // visible only
+          if (!htmlEl.offsetParent) return false;
+          // Skip native interactive elements — they handle keyboard natively
+          const nativeTags = ['BUTTON', 'A', 'INPUT', 'SELECT', 'TEXTAREA', 'SUMMARY'];
+          if (nativeTags.includes(el.tagName)) return false;
+          // Skip elements inside native interactive elements
+          if (el.closest('button, a, summary')) return false;
+          return true;
         })
-        .slice(0, 10)
+        .slice(0, 8)
         .map(el => ({
           html: el.outerHTML.substring(0, 150),
-          selector: el.id ? `#${el.id}` : null,
+          selector: getCssSelector(el),
           tag: el.tagName.toLowerCase(),
           role: el.getAttribute('role'),
-          hasKeydownHandler: el.hasAttribute('onkeydown') || el.hasAttribute('onkeypress') || el.hasAttribute('onkeyup'),
         }));
     });
 
+    // Test each element by actually pressing Enter/Space and observing the response
     for (const btn of customButtons) {
-      // Elements with role="button" or role="link" that lack keyboard event handlers
-      // and are not native interactive elements
-      const isNativeInteractive = ['button', 'a', 'input', 'select', 'textarea'].includes(btn.tag);
-      if (!isNativeInteractive && !btn.hasKeydownHandler) {
-        this.violations.push({
-          rule: 'keyboard-activation-missing',
-          impact: 'serious',
-          description: `Element with role="${btn.role || 'interactive'}" has no keyboard event handler. It won't respond to Enter/Space.`,
-          wcagCriteria: ['wcag211'],
-          elements: [btn.html],
-        selectors: [],
-          howToFix: 'Add a keydown handler that activates on Enter and Space: el.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { /* activate */ } })',
-        });
-      }
-    }
-
-    // Additionally check by attempting activation on role="button" elements
-    // that have an accessible selector
-    const activatableButtons = customButtons.filter(b => b.selector && b.role === 'button');
-    for (const btn of activatableButtons.slice(0, 5)) {
-      if (!btn.selector) continue;
       try {
-        const element = this.page.locator(btn.selector);
+        const element = this.page.locator(btn.selector).first();
         if (await element.count() === 0) continue;
+        if (!(await element.isVisible({ timeout: 1000 }))) continue;
 
-        // Focus the element
+        // Install a one-time probe: listens for click event which Enter/Space should trigger
+        const probeId = `__a11y_probe_${Date.now()}`;
+        await this.page.evaluate(({ selector, probeId }) => {
+          const el = document.querySelector(selector);
+          if (!el) return;
+          (window as any)[probeId] = false;
+          const handler = () => { (window as any)[probeId] = true; };
+          el.addEventListener('click', handler, { once: true });
+          // Also detect DOM mutations (class change, aria-pressed toggle, etc.)
+          const observer = new MutationObserver(() => { (window as any)[probeId] = true; observer.disconnect(); });
+          observer.observe(el, { attributes: true, childList: true, subtree: true });
+          // Disconnect after timeout to avoid leaks
+          setTimeout(() => { observer.disconnect(); el.removeEventListener('click', handler); }, 500);
+        }, { selector: btn.selector, probeId });
+
+        // Focus and press Enter
         await element.focus();
-
-        // Record current URL and any visible changes before activation
-        const beforeState = await this.page.evaluate(() => ({
-          url: window.location.href,
-          activeEl: document.activeElement?.outerHTML?.substring(0, 100),
-        }));
-
-        // Press Enter
+        const beforeUrl = this.page.url();
         await this.page.keyboard.press('Enter');
+        await this.page.waitForTimeout(150);
 
-        // Small wait for any handler to fire
-        await this.page.waitForTimeout(100);
-
-        // Press Space on same element (re-focus if needed)
-        const afterEnter = await this.page.evaluate(() => window.location.href);
-        if (afterEnter !== beforeState.url) {
-          // Navigation happened — Enter worked, move on
-          await this.page.goBack();
+        // Check if navigation happened (Enter worked)
+        if (this.page.url() !== beforeUrl) {
+          try { await this.page.goBack({ timeout: 2000 }); } catch { /* ignore */ }
           continue;
         }
+
+        // Check if the probe fired
+        const responded = await this.page.evaluate((id) => !!(window as any)[id], probeId);
+
+        if (!responded) {
+          // Try Space as well before flagging
+          await element.focus();
+          await this.page.keyboard.press('Space');
+          await this.page.waitForTimeout(150);
+
+          const respondedSpace = await this.page.evaluate((id) => !!(window as any)[id], probeId);
+          if (!respondedSpace && this.page.url() === beforeUrl) {
+            this.violations.push({
+              rule: 'keyboard-activation-missing',
+              impact: 'serious',
+              description: `Element with role="${btn.role || 'interactive'}" does not respond to Enter or Space key activation.`,
+              wcagCriteria: ['wcag211'],
+              elements: [btn.html],
+              selectors: [btn.selector],
+              howToFix: 'Ensure the element responds to keyboard activation (Enter/Space). Use a <button> element, or add a keydown/click handler that responds to keyboard events.',
+            });
+          }
+        }
+
+        // Cleanup probe
+        await this.page.evaluate((id) => { delete (window as any)[id]; }, probeId);
       } catch {
-        // Element may have been removed from DOM, skip
+        // Element removed from DOM or other transient error — skip
       }
     }
   }
@@ -896,7 +933,18 @@ export class AccessibilityAudit {
       if (!fgColor || !bgColor) continue;
 
       // Apply alpha blending if foreground is semi-transparent
-      const effectiveFg = alphaBlend(fgColor, bgColor);
+      let effectiveFg = alphaBlend(fgColor, bgColor);
+
+      // Apply ancestor opacity: blends the fg color toward the bg color
+      const opacity = typeof el.opacity === 'number' ? el.opacity : 1;
+      if (opacity < 1) {
+        effectiveFg = {
+          r: Math.round(effectiveFg.r * opacity + bgColor.r * (1 - opacity)),
+          g: Math.round(effectiveFg.g * opacity + bgColor.g * (1 - opacity)),
+          b: Math.round(effectiveFg.b * opacity + bgColor.b * (1 - opacity)),
+        };
+      }
+
       const ratio = contrastRatio(effectiveFg, bgColor);
       const largeText = isLargeText(el.fontSize, el.fontWeight);
       const requiredAA = getRequiredRatio('AA', largeText);
@@ -906,7 +954,7 @@ export class AccessibilityAudit {
         this.violations.push({
           rule: 'color-contrast-wcag',
           impact,
-          description: `Text has insufficient contrast ratio: ${ratio.toFixed(2)}:1 (requires ${requiredAA}:1 for ${largeText ? 'large' : 'normal'} text). Color: ${el.color} on ${el.bgColor}`,
+          description: `Text has insufficient contrast ratio: ${ratio.toFixed(2)}:1 (requires ${requiredAA}:1 for ${largeText ? 'large' : 'normal'} text). Color: ${el.color} on ${el.bgColor}${opacity < 1 ? ` (opacity: ${opacity.toFixed(2)})` : ''}`,
           wcagCriteria: largeText ? ['wcag143'] : ['wcag143', 'wcag146'],
           elements: [el.html],
           selectors: [el.selector],
@@ -1827,142 +1875,248 @@ export class AccessibilityAudit {
 
   /**
    * WCAG 4.1.2 / APG — ARIA Widget Interaction Patterns
-   * Verifies common ARIA widgets respond to expected keyboard patterns:
-   * - Tablists: arrow keys move between tabs
-   * - Dialogs: Escape closes them
-   * - Menus: Enter activates items, Escape closes
+   * Actually interacts with widgets to verify keyboard support, instead of
+   * checking for inline handler attributes (which misses addEventListener, React, etc.)
+   * - Tablists: focuses a tab and presses ArrowRight to verify focus moves
+   * - Dialogs: presses Escape on visible dialogs to verify they close
+   * - Menus: checks roving tabindex (structural — can't be faked by attributes)
    */
   private async checkAriaWidgetInteraction() {
-    // Test tablist arrow key navigation
-    const tablistIssues = await this.page.evaluate(() => {
-      const issues: { html: string; issue: string }[] = [];
-      const tablists = document.querySelectorAll('[role="tablist"]');
+    // Test tablist arrow key navigation by actually pressing arrow keys
+    const tablists = await this.page.evaluate(() => {
+      function getCssSelector(el: Element): string {
+        if (el.id) return '#' + CSS.escape(el.id);
+        const parts: string[] = [];
+        let current: Element | null = el;
+        while (current && current.nodeType === 1) {
+          let selector = current.tagName.toLowerCase();
+          if (current.id) { parts.unshift('#' + CSS.escape(current.id)); break; }
+          const parent: Element | null = current.parentElement;
+          if (parent) {
+            const siblings = Array.from(parent.children).filter((s: Element) => s.tagName === current!.tagName);
+            if (siblings.length > 1) selector += ':nth-of-type(' + (siblings.indexOf(current!) + 1) + ')';
+          }
+          parts.unshift(selector);
+          current = parent;
+          if (parts.length >= 4) break;
+        }
+        return parts.join(' > ');
+      }
 
-      for (const tablist of tablists) {
+      const results: { selector: string; html: string; tabSelectors: string[] }[] = [];
+      const allTablists = document.querySelectorAll('[role="tablist"]');
+
+      for (const tablist of allTablists) {
         const tabs = Array.from(tablist.querySelectorAll('[role="tab"]'));
         if (tabs.length < 2) continue;
+        // Only test visible tablists
+        if (!(tablist as HTMLElement).offsetParent) continue;
 
-        // Check if tabs have proper tabindex management
-        const focusableTabs = tabs.filter(t => (t as HTMLElement).tabIndex >= 0);
-        const unfocusableTabs = tabs.filter(t => (t as HTMLElement).tabIndex < 0);
+        results.push({
+          selector: getCssSelector(tablist),
+          html: tablist.outerHTML.substring(0, 150),
+          tabSelectors: tabs.slice(0, 5).map(t => getCssSelector(t)),
+        });
+      }
+      return results.slice(0, 3);
+    });
 
-        // In a well-implemented tablist, only the active tab has tabindex=0
-        // and the rest have tabindex=-1 (roving tabindex pattern)
-        if (focusableTabs.length > 1) {
-          // All tabs are focusable = not using roving tabindex
-          // Check if they at least have aria-selected
-          const selectedTabs = tabs.filter(t => t.getAttribute('aria-selected') === 'true');
-          if (selectedTabs.length === 0) {
-            issues.push({
-              html: tablist.outerHTML.substring(0, 150),
-              issue: 'tablist-no-keyboard-pattern',
+    for (const tablist of tablists) {
+      if (tablist.tabSelectors.length < 2) continue;
+      try {
+        // Focus the first tab
+        const firstTab = this.page.locator(tablist.tabSelectors[0]).first();
+        if (await firstTab.count() === 0) continue;
+        if (!(await firstTab.isVisible({ timeout: 1000 }))) continue;
+
+        await firstTab.focus();
+        const focusedBefore = await this.page.evaluate(() =>
+          document.activeElement?.getAttribute('role') === 'tab'
+            ? document.activeElement?.outerHTML?.substring(0, 80) : null
+        );
+        if (!focusedBefore) continue;
+
+        // Press ArrowRight — in a properly implemented tablist, focus should move
+        await this.page.keyboard.press('ArrowRight');
+        await this.page.waitForTimeout(100);
+
+        const focusedAfter = await this.page.evaluate(() => {
+          const el = document.activeElement;
+          return {
+            isTab: el?.getAttribute('role') === 'tab',
+            html: el?.outerHTML?.substring(0, 80) || '',
+            moved: el?.outerHTML?.substring(0, 80) !== undefined,
+          };
+        });
+
+        // If focus didn't move to a different tab, arrow keys aren't supported
+        if (!focusedAfter.isTab || focusedAfter.html === focusedBefore) {
+          this.violations.push({
+            rule: 'aria-tablist-keyboard',
+            impact: 'serious',
+            description: 'Tablist does not support arrow key navigation. Pressing ArrowRight on a tab did not move focus to the next tab (APG pattern).',
+            wcagCriteria: ['wcag412', 'wcag211'],
+            elements: [tablist.html],
+            selectors: [tablist.selector],
+            howToFix: 'Implement roving tabindex: active tab has tabindex="0", others tabindex="-1". Arrow Left/Right should move focus between tabs.',
+          });
+        }
+      } catch {
+        // Tablist may have been removed or is unstable — skip
+      }
+    }
+
+    // Test dialog Escape key by actually pressing Escape on visible dialogs
+    const visibleDialogs = await this.page.evaluate(() => {
+      function getCssSelector(el: Element): string {
+        if (el.id) return '#' + CSS.escape(el.id);
+        const parts: string[] = [];
+        let current: Element | null = el;
+        while (current && current.nodeType === 1) {
+          let selector = current.tagName.toLowerCase();
+          if (current.id) { parts.unshift('#' + CSS.escape(current.id)); break; }
+          const parent: Element | null = current.parentElement;
+          if (parent) {
+            const siblings = Array.from(parent.children).filter((s: Element) => s.tagName === current!.tagName);
+            if (siblings.length > 1) selector += ':nth-of-type(' + (siblings.indexOf(current!) + 1) + ')';
+          }
+          parts.unshift(selector);
+          current = parent;
+          if (parts.length >= 4) break;
+        }
+        return parts.join(' > ');
+      }
+
+      const results: { selector: string; html: string }[] = [];
+      const dialogs = document.querySelectorAll('[role="dialog"], [role="alertdialog"]');
+
+      for (const dialog of dialogs) {
+        const htmlDialog = dialog as HTMLElement;
+        // Only check visible ARIA dialogs (native <dialog> handles Escape natively)
+        if (dialog.tagName === 'DIALOG') continue;
+        if (!htmlDialog.offsetParent) continue;
+
+        results.push({
+          selector: getCssSelector(dialog),
+          html: dialog.outerHTML.substring(0, 150),
+        });
+      }
+      return results.slice(0, 3);
+    });
+
+    for (const dialog of visibleDialogs) {
+      try {
+        // Focus something inside the dialog
+        const dialogEl = this.page.locator(dialog.selector).first();
+        if (await dialogEl.count() === 0) continue;
+
+        // Focus the dialog or a focusable child
+        await this.page.evaluate((sel) => {
+          const el = document.querySelector(sel);
+          if (!el) return;
+          const focusable = el.querySelector('button, a, input, [tabindex="0"]') as HTMLElement;
+          if (focusable) focusable.focus();
+          else (el as HTMLElement).focus();
+        }, dialog.selector);
+
+        // Check it's still visible before pressing Escape
+        const stillVisible = await this.page.evaluate((sel) => {
+          const el = document.querySelector(sel) as HTMLElement;
+          return el && el.offsetParent !== null;
+        }, dialog.selector);
+        if (!stillVisible) continue;
+
+        // Press Escape
+        await this.page.keyboard.press('Escape');
+        await this.page.waitForTimeout(200);
+
+        // Check if dialog was closed (hidden or removed)
+        const closedOrHidden = await this.page.evaluate((sel) => {
+          const el = document.querySelector(sel) as HTMLElement;
+          if (!el) return true; // removed from DOM
+          if (!el.offsetParent) return true; // hidden
+          if (el.getAttribute('aria-hidden') === 'true') return true;
+          return false;
+        }, dialog.selector);
+
+        if (!closedOrHidden) {
+          // Also check if there's at least a close button as fallback
+          const hasCloseButton = await this.page.evaluate((sel) => {
+            const el = document.querySelector(sel);
+            if (!el) return false;
+            return !!el.querySelector('[aria-label*="close" i], [aria-label*="dismiss" i], button.close, .dialog-close, [data-dismiss]');
+          }, dialog.selector);
+
+          if (!hasCloseButton) {
+            this.violations.push({
+              rule: 'aria-dialog-no-escape',
+              impact: 'serious',
+              description: 'Dialog does not close when Escape is pressed, and has no visible close button.',
+              wcagCriteria: ['wcag412', 'wcag211'],
+              elements: [dialog.html],
+              selectors: [dialog.selector],
+              howToFix: 'Add a keydown listener that closes the dialog when Escape is pressed, or use the native <dialog> element which handles this natively.',
             });
           }
         }
-
-        // Check that tabs have keydown handlers (or parent does)
-        const hasKeyHandler = tablist.hasAttribute('onkeydown') ||
-          tabs.some(t => t.hasAttribute('onkeydown') || t.hasAttribute('onkeyup'));
-        if (!hasKeyHandler && focusableTabs.length === tabs.length) {
-          issues.push({
-            html: tablist.outerHTML.substring(0, 150),
-            issue: 'tablist-no-arrow-key-support',
-          });
-        }
+      } catch {
+        // Dialog interaction failed — skip
       }
-      return issues;
-    });
-
-    for (const issue of tablistIssues) {
-      this.violations.push({
-        rule: 'aria-tablist-keyboard',
-        impact: issue.issue === 'tablist-no-arrow-key-support' ? 'serious' : 'moderate',
-        description: issue.issue === 'tablist-no-arrow-key-support'
-          ? 'Tablist does not appear to support arrow key navigation between tabs (APG pattern).'
-          : 'Tablist has no selected tab and does not use roving tabindex pattern.',
-        wcagCriteria: ['wcag412', 'wcag211'],
-        elements: [issue.html],
-        selectors: [],
-        howToFix: 'Implement roving tabindex: active tab has tabindex="0", others tabindex="-1". Arrow Left/Right moves focus between tabs.',
-      });
     }
 
-    // Test dialog Escape key
-    const dialogIssues = await this.page.evaluate(() => {
-      const issues: string[] = [];
-      const dialogs = document.querySelectorAll('[role="dialog"], [role="alertdialog"], dialog');
-
-      for (const dialog of dialogs) {
-        // Only check visible dialogs
-        const htmlDialog = dialog as HTMLElement;
-        if (!htmlDialog.offsetParent && !(dialog as HTMLDialogElement).open) continue;
-
-        // Check if dialog (or any ancestor) has a keydown handler for Escape
-        let hasEscapeHandler = false;
-        let current: Element | null = dialog;
-        while (current) {
-          if (current.hasAttribute('onkeydown') || current.hasAttribute('onkeyup')) {
-            hasEscapeHandler = true;
-            break;
-          }
-          current = current.parentElement;
-        }
-
-        // Native <dialog> elements handle Escape natively
-        if (dialog.tagName === 'DIALOG') hasEscapeHandler = true;
-
-        // Check for a close button as fallback
-        const closeBtn = dialog.querySelector('[aria-label*="close" i], [aria-label*="dismiss" i], button.close, .dialog-close');
-        if (!hasEscapeHandler && !closeBtn) {
-          issues.push(dialog.outerHTML.substring(0, 150));
-        }
-      }
-      return issues;
-    });
-
-    for (const html of dialogIssues) {
-      this.violations.push({
-        rule: 'aria-dialog-no-escape',
-        impact: 'serious',
-        description: 'Dialog has no apparent mechanism to close via Escape key and no visible close button.',
-        wcagCriteria: ['wcag412', 'wcag211'],
-        elements: [html],
-        selectors: [],
-        howToFix: 'Add a keydown listener on the dialog that closes it when Escape is pressed, or use the native <dialog> element.',
-      });
-    }
-
-    // Test menu/menubar patterns
+    // Test menu/menubar patterns — structural check (roving tabindex is observable)
     const menuIssues = await this.page.evaluate(() => {
-      const issues: string[] = [];
+      function getCssSelector(el: Element): string {
+        if (el.id) return '#' + CSS.escape(el.id);
+        const parts: string[] = [];
+        let current: Element | null = el;
+        while (current && current.nodeType === 1) {
+          let selector = current.tagName.toLowerCase();
+          if (current.id) { parts.unshift('#' + CSS.escape(current.id)); break; }
+          const parent: Element | null = current.parentElement;
+          if (parent) {
+            const siblings = Array.from(parent.children).filter((s: Element) => s.tagName === current!.tagName);
+            if (siblings.length > 1) selector += ':nth-of-type(' + (siblings.indexOf(current!) + 1) + ')';
+          }
+          parts.unshift(selector);
+          current = parent;
+          if (parts.length >= 4) break;
+        }
+        return parts.join(' > ');
+      }
+
+      const issues: { html: string; selector: string; issue: string }[] = [];
       const menus = document.querySelectorAll('[role="menu"], [role="menubar"]');
 
       for (const menu of menus) {
+        if (!(menu as HTMLElement).offsetParent) continue;
         const items = menu.querySelectorAll('[role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]');
         if (items.length === 0) {
-          issues.push(menu.outerHTML.substring(0, 150));
+          issues.push({ html: menu.outerHTML.substring(0, 150), selector: getCssSelector(menu), issue: 'no-items' });
           continue;
         }
 
-        // Check roving tabindex pattern
-        const allTabIndexZero = Array.from(items).every(i => (i as HTMLElement).tabIndex >= 0);
-        if (allTabIndexZero && items.length > 1) {
-          // All items are independently focusable = not following APG menu pattern
-          issues.push(menu.outerHTML.substring(0, 150));
+        // Check roving tabindex pattern (this IS observable from DOM state)
+        // Correct: exactly one item has tabindex=0, rest have tabindex=-1
+        const tabbableItems = Array.from(items).filter(i => (i as HTMLElement).tabIndex >= 0);
+        if (tabbableItems.length > 1) {
+          issues.push({ html: menu.outerHTML.substring(0, 150), selector: getCssSelector(menu), issue: 'no-roving-tabindex' });
         }
       }
       return issues.slice(0, 5);
     });
 
-    for (const html of menuIssues) {
+    for (const issue of menuIssues) {
       this.violations.push({
         rule: 'aria-menu-keyboard',
-        impact: 'moderate',
-        description: 'Menu widget does not follow APG keyboard pattern (roving tabindex with arrow key navigation).',
+        impact: issue.issue === 'no-items' ? 'serious' : 'moderate',
+        description: issue.issue === 'no-items'
+          ? 'Menu widget has no menuitem children.'
+          : 'Menu widget does not use roving tabindex pattern. Multiple items are independently tabbable instead of using arrow key navigation.',
         wcagCriteria: ['wcag412'],
-        elements: [html],
-        selectors: [],
-        howToFix: 'Implement APG menu pattern: only first/active item has tabindex="0", use arrow keys to navigate, Enter to activate, Escape to close.',
+        elements: [issue.html],
+        selectors: [issue.selector],
+        howToFix: 'Implement APG menu pattern: only first/active item has tabindex="0", rest have tabindex="-1". Use arrow keys to navigate between items.',
       });
     }
   }
