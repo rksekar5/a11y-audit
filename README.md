@@ -192,20 +192,48 @@ The agent is available in:
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────┐
-│                  AI Agent Layer                   │
-│  (Reasons about context, user impact, patterns)  │
-├─────────────────────────────────────────────────┤
-│              Rule Engine Layer                    │
-│  axe-core + 22 custom WCAG checks               │
-├─────────────────────────────────────────────────┤
-│            Playwright (Browser)                   │
-│  Navigation, interaction, screenshots, DOM       │
-├─────────────────────────────────────────────────┤
-│         Reporting & Tracking Layer               │
-│  HTML reports, trend history, CI quality gates   │
-└─────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph Input["🎯 Input"]
+        A["@a11y audit URL"]
+        B["npm run test:deep"]
+        C["CI (GitHub Actions)"]
+    end
+
+    subgraph Agent["🧠 AI Agent Layer"]
+        D["LLM Reasoning"]
+        D --> E["Decides what to check"]
+        D --> F["Interprets context & user impact"]
+        D --> G["Generates fix recommendations"]
+    end
+
+    subgraph Engine["⚙️ Rule Engine"]
+        H["axe-core\n(WCAG 2.0/2.1/2.2)"]
+        I["22 Custom Checks\n(keyboard, contrast, reflow...)"]
+    end
+
+    subgraph Browser["🌐 Playwright Browser"]
+        J["Navigate & Render"]
+        K["Accessibility Tree"]
+        L["Keyboard Walk (Tab)"]
+        M["Screenshots"]
+        N["DOM Evaluation"]
+    end
+
+    subgraph Output["📊 Output"]
+        O["HTML Report\n(severity, selectors, fixes)"]
+        P["Trend History\n(.a11y-trends/)"]
+        Q["CI Quality Gate\n(pass/fail)"]
+        R["PR Comment\n(new/resolved issues)"]
+    end
+
+    A --> Agent
+    B --> Engine
+    C --> Engine
+
+    Agent --> Engine
+    Engine --> Browser
+    Browser --> Output
 ```
 
 ## Project Structure
