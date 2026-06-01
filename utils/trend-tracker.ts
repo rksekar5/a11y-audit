@@ -253,114 +253,323 @@ export class TrendTracker {
     const minor = entries.map(e => e.minor);
     const totals = entries.map(e => e.totalViolations);
 
+    const latest = entries.length > 0 ? entries[entries.length - 1] : null;
+    const previous = entries.length >= 2 ? entries[entries.length - 2] : null;
+    const totalDelta = latest && previous ? latest.totalViolations - previous.totalViolations : 0;
+    const critDelta = latest && previous ? latest.critical - previous.critical : 0;
+    const improvementPct = entries.length >= 2 && totals[0] > 0
+      ? Math.round(((totals[0] - totals[totals.length - 1]) / totals[0]) * 100) : 0;
+
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Accessibility Trend Report</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Accessibility Trend Report — ${escapeHtml(this.data.projectName)}</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"><\/script>
   <style>
-    body { font-family: system-ui, -apple-system, sans-serif; max-width: 1200px; margin: 0 auto; padding: 20px; background: #fafafa; }
-    h1 { color: #1a237e; }
-    .chart-container { background: white; border-radius: 8px; padding: 20px; margin: 20px 0; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin: 20px 0; }
-    .stat-card { background: white; border-radius: 8px; padding: 15px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-    .stat-value { font-size: 28px; font-weight: bold; }
-    .stat-label { color: #666; font-size: 13px; }
-    .trend-positive { color: #2e7d32; }
-    .trend-negative { color: #d32f2f; }
-    table { width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; margin-top: 20px; }
-    th { background: #1a237e; color: white; padding: 10px; text-align: left; font-size: 12px; }
-    td { padding: 8px 10px; border-bottom: 1px solid #eee; font-size: 13px; }
-    .sparkline { display: inline-flex; align-items: end; gap: 2px; height: 30px; }
-    .sparkline-bar { width: 8px; background: #1a237e; border-radius: 2px; transition: height 0.3s; }
+    :root {
+      --bg-primary: #0f172a;
+      --bg-secondary: #1e293b;
+      --bg-card: #1e293b;
+      --text-primary: #f1f5f9;
+      --text-secondary: #94a3b8;
+      --text-muted: #64748b;
+      --border: #334155;
+      --accent: #6366f1;
+      --success: #22c55e;
+      --danger: #ef4444;
+      --radius: 12px;
+    }
+    [data-theme="light"] {
+      --bg-primary: #f8fafc;
+      --bg-secondary: #ffffff;
+      --bg-card: #ffffff;
+      --text-primary: #0f172a;
+      --text-secondary: #475569;
+      --text-muted: #94a3b8;
+      --border: #e2e8f0;
+      --accent: #4f46e5;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      line-height: 1.6;
+      padding: 24px;
+      min-height: 100vh;
+    }
+    .container { max-width: 1400px; margin: 0 auto; }
+
+    /* Header */
+    .header {
+      display: flex; justify-content: space-between; align-items: flex-start;
+      margin-bottom: 32px; flex-wrap: wrap; gap: 16px;
+    }
+    .header h1 { font-size: 24px; font-weight: 700; }
+    .header .meta { color: var(--text-secondary); font-size: 13px; margin-top: 4px; }
+    .theme-toggle {
+      width: 36px; height: 36px; border-radius: 50%; border: 1px solid var(--border);
+      background: var(--bg-secondary); color: var(--text-primary);
+      cursor: pointer; font-size: 16px; display: flex; align-items: center; justify-content: center;
+    }
+
+    /* Stats Row */
+    .stats-row {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 16px; margin-bottom: 24px;
+    }
+    .stat-card {
+      background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 20px; position: relative; overflow: hidden;
+    }
+    .stat-card::before {
+      content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px;
+      background: var(--accent);
+    }
+    .stat-card.success::before { background: var(--success); }
+    .stat-card.danger::before { background: var(--danger); }
+    .stat-value { font-size: 32px; font-weight: 700; margin-bottom: 2px; }
+    .stat-label { font-size: 12px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; }
+    .stat-delta {
+      font-size: 12px; font-weight: 500; margin-top: 4px;
+    }
+    .stat-delta.positive { color: var(--success); }
+    .stat-delta.negative { color: var(--danger); }
+
+    /* Charts */
+    .chart-grid {
+      display: grid; grid-template-columns: 2fr 1fr; gap: 16px; margin-bottom: 24px;
+    }
+    @media (max-width: 768px) { .chart-grid { grid-template-columns: 1fr; } }
+    .chart-card {
+      background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 24px;
+    }
+    .chart-card h3 {
+      font-size: 14px; color: var(--text-secondary); margin-bottom: 16px;
+      font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px;
+    }
+
+    /* Table */
+    .table-card {
+      background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius);
+      overflow: hidden;
+    }
+    .table-card h3 {
+      font-size: 15px; font-weight: 600; padding: 16px 24px;
+      border-bottom: 1px solid var(--border);
+    }
+    table { width: 100%; border-collapse: collapse; }
+    th {
+      padding: 10px 16px; text-align: left; font-size: 11px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted);
+      border-bottom: 1px solid var(--border); background: var(--bg-primary);
+    }
+    td {
+      padding: 10px 16px; border-bottom: 1px solid var(--border); font-size: 13px;
+      color: var(--text-primary);
+    }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: var(--bg-primary); }
+    .severity-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; }
+    .url-cell { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--accent); }
+
+    /* Footer */
+    .footer {
+      margin-top: 32px; text-align: center; color: var(--text-muted); font-size: 12px;
+      padding: 16px; border-top: 1px solid var(--border);
+    }
+    .footer a { color: var(--accent); text-decoration: none; }
   </style>
 </head>
 <body>
-  <h1>Accessibility Trend Report</h1>
-  <p style="color:#666">${this.data.projectName} — ${entries.length} audits tracked</p>
+  <div class="container">
+    <!-- Header -->
+    <div class="header">
+      <div>
+        <h1>📈 Accessibility Trend Report</h1>
+        <div class="meta">${escapeHtml(this.data.projectName)} • ${entries.length} audit${entries.length !== 1 ? 's' : ''} tracked</div>
+      </div>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle theme">🌓</button>
+    </div>
 
-  <div class="stats-grid">
-    <div class="stat-card">
-      <div class="stat-value">${entries.length > 0 ? entries[entries.length - 1].totalViolations : 0}</div>
-      <div class="stat-label">Current Total Issues</div>
-      ${entries.length >= 2 ? `<div class="${totals[totals.length - 1] <= totals[totals.length - 2] ? 'trend-positive' : 'trend-negative'}">${totals[totals.length - 1] - totals[totals.length - 2] <= 0 ? '↓' : '↑'} ${Math.abs(totals[totals.length - 1] - totals[totals.length - 2])} from last</div>` : ''}
+    <!-- Stats Row -->
+    <div class="stats-row">
+      <div class="stat-card ${latest && latest.totalViolations === 0 ? 'success' : ''}">
+        <div class="stat-value">${latest ? latest.totalViolations : '—'}</div>
+        <div class="stat-label">Current Violations</div>
+        ${totalDelta !== 0 ? `<div class="stat-delta ${totalDelta < 0 ? 'positive' : 'negative'}">${totalDelta < 0 ? '↓' : '↑'} ${Math.abs(totalDelta)} from last audit</div>` : ''}
+      </div>
+      <div class="stat-card ${latest && latest.critical === 0 ? 'success' : 'danger'}">
+        <div class="stat-value" style="color:${latest && latest.critical > 0 ? '#ef4444' : '#22c55e'}">${latest ? latest.critical : '—'}</div>
+        <div class="stat-label">Critical Issues</div>
+        ${critDelta !== 0 ? `<div class="stat-delta ${critDelta < 0 ? 'positive' : 'negative'}">${critDelta < 0 ? '↓' : '↑'} ${Math.abs(critDelta)}</div>` : ''}
+      </div>
+      <div class="stat-card">
+        <div class="stat-value">${entries.length}</div>
+        <div class="stat-label">Total Audits</div>
+      </div>
+      <div class="stat-card ${improvementPct > 0 ? 'success' : improvementPct < 0 ? 'danger' : ''}">
+        <div class="stat-value" style="color:${improvementPct > 0 ? '#22c55e' : improvementPct < 0 ? '#ef4444' : 'var(--text-primary)'}">${improvementPct > 0 ? '+' : ''}${improvementPct}%</div>
+        <div class="stat-label">Overall Improvement</div>
+      </div>
     </div>
-    <div class="stat-card">
-      <div class="stat-value">${entries.length > 0 ? entries[entries.length - 1].critical : 0}</div>
-      <div class="stat-label">Critical Issues</div>
+
+    <!-- Charts -->
+    <div class="chart-grid">
+      <!-- Trend Line Chart -->
+      <div class="chart-card">
+        <h3>Violations Over Time</h3>
+        <canvas id="trendChart"></canvas>
+      </div>
+
+      <!-- Severity Breakdown (latest) -->
+      <div class="chart-card">
+        <h3>Latest Breakdown</h3>
+        <canvas id="breakdownChart"></canvas>
+      </div>
     </div>
-    <div class="stat-card">
-      <div class="stat-value">${entries.length}</div>
-      <div class="stat-label">Total Audits</div>
+
+    <!-- Totals Area Chart -->
+    <div class="chart-card" style="margin-bottom:24px">
+      <h3>Total Violations Trend</h3>
+      <canvas id="totalChart" style="max-height:160px"></canvas>
     </div>
-    <div class="stat-card">
-      <div class="stat-value">${entries.length >= 2 ? Math.round(((totals[0] - totals[totals.length - 1]) / Math.max(totals[0], 1)) * 100) : 0}%</div>
-      <div class="stat-label">Overall Improvement</div>
+
+    <!-- History Table -->
+    <div class="table-card">
+      <h3>Audit History</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>URL</th>
+            <th>Branch</th>
+            <th>Total</th>
+            <th>Critical</th>
+            <th>Serious</th>
+            <th>Moderate</th>
+            <th>Minor</th>
+            <th>Pages</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${[...entries].reverse().map(e => `
+            <tr>
+              <td>${new Date(e.timestamp).toLocaleString()}</td>
+              <td class="url-cell" title="${escapeHtml(e.url)}">${escapeHtml(e.url)}</td>
+              <td>${e.gitBranch || '—'}</td>
+              <td><strong>${e.totalViolations}</strong></td>
+              <td><span class="severity-dot" style="background:#ef4444"></span>${e.critical}</td>
+              <td><span class="severity-dot" style="background:#ea580c"></span>${e.serious}</td>
+              <td><span class="severity-dot" style="background:#ca8a04"></span>${e.moderate}</td>
+              <td><span class="severity-dot" style="background:#2563eb"></span>${e.minor}</td>
+              <td>${e.pagesAudited}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Footer -->
+    <div class="footer">
+      Generated by <a href="https://github.com/rksekar5/a11y-audit">a11y-audit</a> • AI-Powered Accessibility Auditor
     </div>
   </div>
 
-  <div class="chart-container">
-    <h2 style="margin-top:0">Violations Over Time</h2>
-    <canvas id="trendChart" height="80"></canvas>
-  </div>
-
-  <h2>Audit History</h2>
-  <table>
-    <thead>
-      <tr>
-        <th>Date</th>
-        <th>URL</th>
-        <th>Branch</th>
-        <th>Total</th>
-        <th>Critical</th>
-        <th>Serious</th>
-        <th>Moderate</th>
-        <th>Minor</th>
-        <th>Pages</th>
-      </tr>
-    </thead>
-    <tbody>
-      ${[...entries].reverse().map(e => `
-        <tr>
-          <td>${new Date(e.timestamp).toLocaleString()}</td>
-          <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis">${escapeHtml(e.url)}</td>
-          <td>${e.gitBranch || '—'}</td>
-          <td><strong>${e.totalViolations}</strong></td>
-          <td style="color:#d32f2f">${e.critical}</td>
-          <td style="color:#f57c00">${e.serious}</td>
-          <td style="color:#fbc02d">${e.moderate}</td>
-          <td style="color:#1976d2">${e.minor}</td>
-          <td>${e.pagesAudited}</td>
-        </tr>
-      `).join('')}
-    </tbody>
-  </table>
-
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
   <script>
-    const ctx = document.getElementById('trendChart').getContext('2d');
-    new Chart(ctx, {
+    // Trend line chart (stacked area)
+    const trendCtx = document.getElementById('trendChart').getContext('2d');
+    new Chart(trendCtx, {
       type: 'line',
       data: {
         labels: ${JSON.stringify(labels)},
         datasets: [
-          { label: 'Critical', data: ${JSON.stringify(critical)}, borderColor: '#d32f2f', backgroundColor: 'rgba(211,47,47,0.1)', fill: true, tension: 0.3 },
-          { label: 'Serious', data: ${JSON.stringify(serious)}, borderColor: '#f57c00', backgroundColor: 'rgba(245,124,0,0.1)', fill: true, tension: 0.3 },
-          { label: 'Moderate', data: ${JSON.stringify(moderate)}, borderColor: '#fbc02d', backgroundColor: 'rgba(251,192,45,0.1)', fill: true, tension: 0.3 },
-          { label: 'Minor', data: ${JSON.stringify(minor)}, borderColor: '#1976d2', backgroundColor: 'rgba(25,118,210,0.1)', fill: true, tension: 0.3 },
+          { label: 'Critical', data: ${JSON.stringify(critical)}, borderColor: '#ef4444', backgroundColor: 'rgba(239,68,68,0.1)', fill: true, tension: 0.4, borderWidth: 2, pointRadius: 3 },
+          { label: 'Serious', data: ${JSON.stringify(serious)}, borderColor: '#ea580c', backgroundColor: 'rgba(234,88,12,0.1)', fill: true, tension: 0.4, borderWidth: 2, pointRadius: 3 },
+          { label: 'Moderate', data: ${JSON.stringify(moderate)}, borderColor: '#ca8a04', backgroundColor: 'rgba(202,138,4,0.1)', fill: true, tension: 0.4, borderWidth: 2, pointRadius: 3 },
+          { label: 'Minor', data: ${JSON.stringify(minor)}, borderColor: '#2563eb', backgroundColor: 'rgba(37,99,235,0.1)', fill: true, tension: 0.4, borderWidth: 2, pointRadius: 3 },
         ],
       },
       options: {
         responsive: true,
         interaction: { intersect: false, mode: 'index' },
         scales: {
-          y: { beginAtZero: true, title: { display: true, text: 'Violations' } },
-          x: { title: { display: true, text: 'Date' } },
+          y: { beginAtZero: true, grid: { color: 'rgba(100,116,139,0.1)' }, ticks: { color: '#94a3b8' } },
+          x: { grid: { color: 'rgba(100,116,139,0.05)' }, ticks: { color: '#94a3b8' } },
         },
-        plugins: { legend: { position: 'top' } },
+        plugins: {
+          legend: { position: 'top', labels: { color: '#94a3b8', usePointStyle: true, pointStyle: 'circle' } },
+          tooltip: { backgroundColor: '#1e293b', titleColor: '#f1f5f9', bodyColor: '#94a3b8', borderColor: '#334155', borderWidth: 1 }
+        },
       },
     });
-  </script>
+
+    // Breakdown doughnut (latest audit)
+    const breakCtx = document.getElementById('breakdownChart').getContext('2d');
+    new Chart(breakCtx, {
+      type: 'doughnut',
+      data: {
+        labels: ['Critical', 'Serious', 'Moderate', 'Minor'],
+        datasets: [{
+          data: [${latest ? latest.critical : 0}, ${latest ? latest.serious : 0}, ${latest ? latest.moderate : 0}, ${latest ? latest.minor : 0}],
+          backgroundColor: ['#ef4444', '#ea580c', '#ca8a04', '#2563eb'],
+          borderWidth: 0,
+          cutout: '65%'
+        }]
+      },
+      options: {
+        responsive: true,
+        plugins: {
+          legend: { position: 'bottom', labels: { color: '#94a3b8', usePointStyle: true, pointStyle: 'circle', padding: 12 } },
+          tooltip: { backgroundColor: '#1e293b', titleColor: '#f1f5f9', bodyColor: '#94a3b8' }
+        }
+      }
+    });
+
+    // Total violations area chart
+    const totalCtx = document.getElementById('totalChart').getContext('2d');
+    new Chart(totalCtx, {
+      type: 'line',
+      data: {
+        labels: ${JSON.stringify(labels)},
+        datasets: [{
+          label: 'Total Violations',
+          data: ${JSON.stringify(totals)},
+          borderColor: '#6366f1',
+          backgroundColor: 'rgba(99,102,241,0.15)',
+          fill: true,
+          tension: 0.4,
+          borderWidth: 2,
+          pointRadius: 4,
+          pointBackgroundColor: '#6366f1'
+        }]
+      },
+      options: {
+        responsive: true,
+        scales: {
+          y: { beginAtZero: true, grid: { color: 'rgba(100,116,139,0.1)' }, ticks: { color: '#94a3b8' } },
+          x: { grid: { display: false }, ticks: { color: '#94a3b8' } },
+        },
+        plugins: {
+          legend: { display: false },
+          tooltip: { backgroundColor: '#1e293b', titleColor: '#f1f5f9', bodyColor: '#94a3b8' }
+        }
+      }
+    });
+
+    // Theme toggle
+    function toggleTheme() {
+      const body = document.body;
+      const current = body.getAttribute('data-theme');
+      body.setAttribute('data-theme', current === 'light' ? 'dark' : 'light');
+      localStorage.setItem('a11y-theme', body.getAttribute('data-theme'));
+    }
+    const saved = localStorage.getItem('a11y-theme');
+    if (saved) document.body.setAttribute('data-theme', saved);
+  <\/script>
 </body>
 </html>`;
   }
