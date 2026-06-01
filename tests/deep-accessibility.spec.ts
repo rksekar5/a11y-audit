@@ -1,8 +1,8 @@
 import { test, expect } from '@playwright/test';
 import { AccessibilityAudit, generateA11yReport, A11yAuditResult } from '../utils/accessibility-audit';
 
-const TARGET_URL = process.env.AUDIT_URL || 'https://playwright.dev/';
-const DOCS_URL = process.env.AUDIT_DOCS_URL || 'https://playwright.dev/docs/intro';
+const TARGET_URL = process.env.AUDIT_URL || 'https://www.w3.org/WAI/demos/bad/before/home.html';
+const DOCS_URL = process.env.AUDIT_DOCS_URL || 'https://www.w3.org/WAI/demos/bad/before/news.html';
 
 /**
  * Comprehensive accessibility audit tests that replicate BrowserStack-level
@@ -72,7 +72,6 @@ test.describe('Deep Accessibility Audit (WCAG 2.0/2.1/2.2)', () => {
 
     const results = await audit.runFullAudit({
       wcagLevel: 'AA',
-      exclude: ['.DocSearch'], // exclude known third-party widgets
     });
 
     await testInfo.attach('accessibility-audit-report', {
@@ -101,7 +100,7 @@ test.describe('Deep Accessibility Audit (WCAG 2.0/2.1/2.2)', () => {
     const urls = [
       TARGET_URL,
       DOCS_URL,
-      `${new URL(TARGET_URL).origin}/docs/api/class-page`,
+      'https://www.w3.org/WAI/demos/bad/before/survey.html',
     ];
 
     const allResults: A11yAuditResult[] = [];

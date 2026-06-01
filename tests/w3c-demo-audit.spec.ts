@@ -4,31 +4,46 @@ import { AccessibilityAudit, generateA11yReport } from '../utils/accessibility-a
 import fs from 'fs';
 import path from 'path';
 
-const TARGET_URL = 'https://www.w3.org/WAI/demos/bad/after/home.html';
+const BEFORE_URL = 'https://www.w3.org/WAI/demos/bad/before/home.html';
+const AFTER_URL = 'https://www.w3.org/WAI/demos/bad/after/home.html';
 const REPORTS_DIR = path.resolve(__dirname, '../test-results/a11y-reports');
 
-test.describe('W3C WAI Demo - Accessibility Comparison', () => {
+test.describe('W3C WAI BAD Demo - Before vs After Comparison', () => {
   test.beforeAll(async () => {
     if (!fs.existsSync(REPORTS_DIR)) {
       fs.mkdirSync(REPORTS_DIR, { recursive: true });
     }
   });
 
-  test('axe-core only audit', async ({ page }) => {
-    await page.goto(TARGET_URL, { waitUntil: 'networkidle' });
+  test('axe-core audit — BEFORE (intentionally broken)', async ({ page }) => {
+    await page.goto(BEFORE_URL, { waitUntil: 'networkidle' });
 
     const results = await new AxeBuilder({ page })
       .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'best-practice'])
       .analyze();
 
-    // Generate HTML report
-    const html = generateAxeReport(results, TARGET_URL);
-    fs.writeFileSync(path.join(REPORTS_DIR, 'axe-core-report.html'), html);
-    console.log(`Axe-core found ${results.violations.length} violations`);
+    const html = generateAxeReport(results, BEFORE_URL);
+    fs.writeFileSync(path.join(REPORTS_DIR, 'axe-core-before.html'), html);
+    console.log(`Axe-core BEFORE: ${results.violations.length} violations`);
+
+    // The "before" page is intentionally broken — we expect violations
+    expect(results.violations.length).toBeGreaterThan(0);
   });
 
-  test('deep accessibility audit', async ({ page }) => {
-    await page.goto(TARGET_URL, { waitUntil: 'networkidle' });
+  test('axe-core audit — AFTER (fixed version)', async ({ page }) => {
+    await page.goto(AFTER_URL, { waitUntil: 'networkidle' });
+
+    const results = await new AxeBuilder({ page })
+      .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'best-practice'])
+      .analyze();
+
+    const html = generateAxeReport(results, AFTER_URL);
+    fs.writeFileSync(path.join(REPORTS_DIR, 'axe-core-after.html'), html);
+    console.log(`Axe-core AFTER: ${results.violations.length} violations`);
+  });
+
+  test('deep audit — BEFORE (intentionally broken)', async ({ page }) => {
+    await page.goto(BEFORE_URL, { waitUntil: 'networkidle' });
 
     const screenshotDir = path.join(REPORTS_DIR, 'screenshots');
     const audit = new AccessibilityAudit(page);
@@ -38,10 +53,50 @@ test.describe('W3C WAI Demo - Accessibility Comparison', () => {
       screenshotDir,
     });
 
-    // Generate HTML report
     const html = generateA11yReport(results);
-    fs.writeFileSync(path.join(REPORTS_DIR, 'deep-a11y-report.html'), html);
-    console.log(`Deep audit found ${results.totalViolations} violations`);
+    fs.writeFileSync(path.join(REPORTS_DIR, 'deep-a11y-before.html'), html);
+    console.log(`Deep audit BEFORE: ${results.totalViolations} violations`);
+
+    // The "before" page should have many issues
+    expect(results.totalViolations).toBeGreaterThan(5);
+  });
+
+  test('deep audit — AFTER (fixed version)', async ({ page }) => {
+    await page.goto(AFTER_URL, { waitUntil: 'networkidle' });
+
+    const screenshotDir = path.join(REPORTS_DIR, 'screenshots');
+    const audit = new AccessibilityAudit(page);
+    const results = await audit.runFullAudit({
+      wcagLevel: 'AA',
+      includeExperimental: true,
+      screenshotDir,
+    });
+
+    const html = generateA11yReport(results);
+    fs.writeFileSync(path.join(REPORTS_DIR, 'deep-a11y-after.html'), html);
+    console.log(`Deep audit AFTER: ${results.totalViolations} violations`);
+
+    // The "after" page should have significantly fewer issues
+    // (still may have some — it's not 100% perfect)
+  });
+
+  test('comparison: before should have MORE violations than after', async ({ page }) => {
+    // Run audit on "before"
+    await page.goto(BEFORE_URL, { waitUntil: 'networkidle' });
+    const auditBefore = new AccessibilityAudit(page);
+    const beforeResults = await auditBefore.runFullAudit({ wcagLevel: 'AA' });
+
+    // Run audit on "after"
+    await page.goto(AFTER_URL, { waitUntil: 'networkidle' });
+    const auditAfter = new AccessibilityAudit(page);
+    const afterResults = await auditAfter.runFullAudit({ wcagLevel: 'AA' });
+
+    console.log(`BEFORE: ${beforeResults.totalViolations} violations`);
+    console.log(`AFTER:  ${afterResults.totalViolations} violations`);
+    console.log(`Improvement: ${beforeResults.totalViolations - afterResults.totalViolations} fewer violations`);
+
+    // The fixed version should have fewer violations than the broken one
+    expect(afterResults.totalViolations).toBeLessThan(beforeResults.totalViolations);
   });
 });
 
