@@ -10,6 +10,8 @@ type A11yFixtures = {
     wcagLevel?: 'A' | 'AA' | 'AAA';
     includeExperimental?: boolean;
     exclude?: string[];
+    disableRules?: string[];
+    baselinePath?: string;
   }) => Promise<A11yAuditResult>;
 };
 

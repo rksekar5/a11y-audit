@@ -1,7 +1,7 @@
 # A11y Audit
 
 ## Context
-Accessibility audit framework: Playwright + axe-core + 22 custom WCAG checks + site crawler + trend tracking.
+Accessibility audit framework: Playwright + axe-core + 22 custom WCAG checks + site crawler + trend tracking + MCP live browser.
 
 ## Conventions
 - Test runner: `@playwright/test`
@@ -10,6 +10,7 @@ Accessibility audit framework: Playwright + axe-core + 22 custom WCAG checks + s
 - Contrast calculation: `utils/contrast-ratio.ts` (WCAG relative luminance formula)
 - Site crawler: `utils/site-crawler.ts`
 - Trend storage: `utils/trend-tracker.ts` (JSON-based in `.a11y-trends/`)
+- MCP server: `@playwright/mcp` (live interactive auditing via browser tools)
 
 ## Locator Priority
 1. `getByRole()` - accessibility roles
@@ -23,6 +24,8 @@ Accessibility audit framework: Playwright + axe-core + 22 custom WCAG checks + s
 - `fixtures/` — reusable Playwright fixtures
 - `scripts/` — CLI tools (show-trends, generate-trend-report)
 - `.github/workflows/` — CI with PR comments
+- `.github/agents/` — @a11y Copilot agent (dual-mode: MCP interactive + script fallback)
+- `.vscode/mcp.json` — Playwright MCP server config
 
 ## Commands
 - `npm run test:deep` — full WCAG audit on single page

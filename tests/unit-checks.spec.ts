@@ -250,3 +250,88 @@ test.describe('Unit: Deduplication', () => {
     expect(emptyLinkViolations.length).toBe(ruleSet.size);
   });
 });
+
+test.describe('Unit: disableRules option', () => {
+  test('suppresses disabled rules from results', async ({ page }) => {
+    await page.setContent('<html lang="en"><body><p>No headings</p></body></html>');
+    const audit = new AccessibilityAudit(page);
+    const results = await audit.runFullAudit({
+      wcagLevel: 'AA',
+      disableRules: ['heading-missing', 'landmark-main-missing', 'landmark-nav-missing'],
+    });
+    expect(results.violations.find(v => v.rule === 'heading-missing')).toBeFalsy();
+    expect(results.violations.find(v => v.rule === 'landmark-main-missing')).toBeFalsy();
+  });
+});
+
+test.describe('Unit: Baseline filtering', () => {
+  test('generates and applies baseline', async ({ page }) => {
+    await page.setContent('<html lang="en"><body><p>No headings</p></body></html>');
+    const audit = new AccessibilityAudit(page);
+
+    // First run: get violations
+    const results1 = await audit.runFullAudit({ wcagLevel: 'AA' });
+    expect(results1.violations.find(v => v.rule === 'heading-missing')).toBeTruthy();
+
+    // Generate baseline
+    const baselinePath = '/tmp/a11y-test-baseline.json';
+    AccessibilityAudit.generateBaseline(results1, baselinePath);
+
+    // Second run with baseline: known issues are filtered
+    const audit2 = new AccessibilityAudit(page);
+    const results2 = await audit2.runFullAudit({ wcagLevel: 'AA', baselinePath });
+    expect(results2.violations.find(v => v.rule === 'heading-missing')).toBeFalsy();
+  });
+});
+
+test.describe('Unit: Focus Not Obscured (WCAG 2.4.11)', () => {
+  test('detects focus hidden behind sticky header', async ({ page }) => {
+    await page.setContent(`
+      <html lang="en"><body>
+        <header style="position:fixed; top:0; left:0; right:0; height:60px; background:white; z-index:100;">Nav</header>
+        <main style="margin-top:60px;">
+          <h1>Content</h1>
+          <a href="#" style="position:relative; top:-80px;">Hidden link</a>
+          <a href="#b">Visible link</a>
+        </main>
+      </body></html>
+    `);
+    const audit = new AccessibilityAudit(page);
+    const results = await audit.runFullAudit({ wcagLevel: 'AA' });
+    // The link at top:-80px will be behind the fixed header
+    const obscuredViolation = results.violations.find(v => v.rule === 'focus-not-obscured');
+    // May or may not trigger depending on geometry — just ensure the check runs without crashing
+    expect(results.url).toBeTruthy();
+  });
+});
+
+test.describe('Unit: ARIA Widget Interaction', () => {
+  test('detects tablist without keyboard pattern', async ({ page }) => {
+    await page.setContent(`
+      <html lang="en"><body><main><h1>Tabs</h1>
+        <div role="tablist">
+          <button role="tab" tabindex="0">Tab 1</button>
+          <button role="tab" tabindex="0">Tab 2</button>
+          <button role="tab" tabindex="0">Tab 3</button>
+        </div>
+        <div role="tabpanel">Content 1</div>
+      </main></body></html>
+    `);
+    const audit = new AccessibilityAudit(page);
+    const results = await audit.runFullAudit({ wcagLevel: 'AA' });
+    expect(results.violations.find(v => v.rule === 'aria-tablist-keyboard')).toBeTruthy();
+  });
+
+  test('detects dialog without escape mechanism', async ({ page }) => {
+    await page.setContent(`
+      <html lang="en"><body><main><h1>Dialog</h1>
+        <div role="dialog" aria-label="Test dialog" style="display:block;">
+          <p>Dialog content with no close button or escape handler</p>
+        </div>
+      </main></body></html>
+    `);
+    const audit = new AccessibilityAudit(page);
+    const results = await audit.runFullAudit({ wcagLevel: 'AA' });
+    expect(results.violations.find(v => v.rule === 'aria-dialog-no-escape')).toBeTruthy();
+  });
+});

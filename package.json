@@ -1,9 +1,29 @@
 {
-  "name": "a11y-audit",
-  "version": "1.0.0",
-  "description": "AI-powered accessibility audit agent using Playwright + Copilot",
+  "name": "@a11y-audit/playwright",
+  "version": "2.0.0",
+  "description": "AI-powered accessibility audit framework — Playwright + axe-core + 24 custom WCAG checks + site crawler + trend tracking",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./fixture": {
+      "types": "./dist/fixtures/a11y.fixture.d.ts",
+      "default": "./dist/fixtures/a11y.fixture.js"
+    }
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepublishOnly": "npm run build",
     "test": "playwright test",
+    "test:unit": "playwright test tests/unit-checks.spec.ts",
     "test:audit": "playwright test tests/w3c-demo-audit.spec.ts",
     "test:deep": "playwright test tests/deep-accessibility.spec.ts",
     "test:crawl": "playwright test tests/site-crawl.spec.ts",
@@ -13,9 +33,21 @@
     "trends": "npx ts-node scripts/show-trends.ts",
     "trends:report": "npx ts-node scripts/generate-trend-report.ts"
   },
-  "keywords": ["accessibility", "wcag", "a11y", "playwright", "audit", "axe-core"],
+  "keywords": ["accessibility", "wcag", "a11y", "playwright", "audit", "axe-core", "wcag22", "aria", "contrast", "keyboard"],
   "license": "MIT",
   "type": "commonjs",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rksekar5/a11y-audit.git"
+  },
+  "homepage": "https://github.com/rksekar5/a11y-audit#readme",
+  "engines": {
+    "node": ">=18"
+  },
+  "peerDependencies": {
+    "@playwright/test": ">=1.40.0",
+    "@axe-core/playwright": ">=4.8.0"
+  },
   "devDependencies": {
     "@playwright/test": "^1.60.0",
     "@axe-core/playwright": "^4.10.0",

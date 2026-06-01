@@ -154,6 +154,99 @@ export function parseColor(color: string): RGBColor | null {
     return { ...namedColors[trimmed], a: 1 };
   }
 
+  // Handle hsl/hsla
+  const hslMatch = trimmed.match(
+    /hsla?\(\s*([\d.]+(?:deg|rad|grad|turn)?)\s*[,\s]\s*([\d.]+)%\s*[,\s]\s*([\d.]+)%\s*(?:[,/]\s*([\d.]+%?))?\s*\)/
+  );
+  if (hslMatch) {
+    let h = parseFloat(hslMatch[1]);
+    // Convert to degrees if needed
+    if (hslMatch[1].includes('rad')) h = h * 180 / Math.PI;
+    else if (hslMatch[1].includes('grad')) h = h * 0.9;
+    else if (hslMatch[1].includes('turn')) h = h * 360;
+
+    const s = parseFloat(hslMatch[2]) / 100;
+    const l = parseFloat(hslMatch[3]) / 100;
+    const a = hslMatch[4] ? (hslMatch[4].endsWith('%') ? parseFloat(hslMatch[4]) / 100 : parseFloat(hslMatch[4])) : 1;
+
+    // HSL to RGB conversion
+    const hueToRgb = (p: number, q: number, t: number): number => {
+      if (t < 0) t += 1;
+      if (t > 1) t -= 1;
+      if (t < 1 / 6) return p + (q - p) * 6 * t;
+      if (t < 1 / 2) return q;
+      if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+      return p;
+    };
+
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+    const p = 2 * l - q;
+    const hNorm = (h % 360) / 360;
+
+    return {
+      r: Math.round(hueToRgb(p, q, hNorm + 1 / 3) * 255),
+      g: Math.round(hueToRgb(p, q, hNorm) * 255),
+      b: Math.round(hueToRgb(p, q, hNorm - 1 / 3) * 255),
+      a,
+    };
+  }
+
+  // Handle oklch() — CSS Color Level 4
+  const oklchMatch = trimmed.match(
+    /oklch\(\s*([\d.]+%?)\s+([\d.]+%?)\s+([\d.]+(?:deg|rad|grad|turn)?)\s*(?:\/\s*([\d.]+%?))?\s*\)/
+  );
+  if (oklchMatch) {
+    let L = parseFloat(oklchMatch[1]);
+    if (oklchMatch[1].endsWith('%')) L = L / 100;
+    let C = parseFloat(oklchMatch[2]);
+    if (oklchMatch[2].endsWith('%')) C = C / 100 * 0.4; // max chroma ~0.4
+    let h = parseFloat(oklchMatch[3]);
+    if (oklchMatch[3].includes('rad')) h = h * 180 / Math.PI;
+    else if (oklchMatch[3].includes('grad')) h = h * 0.9;
+    else if (oklchMatch[3].includes('turn')) h = h * 360;
+    const a = oklchMatch[4] ? (oklchMatch[4].endsWith('%') ? parseFloat(oklchMatch[4]) / 100 : parseFloat(oklchMatch[4])) : 1;
+
+    // OKLCh to OKLab
+    const hRad = h * Math.PI / 180;
+    const labA = C * Math.cos(hRad);
+    const labB = C * Math.sin(hRad);
+
+    // OKLab to linear RGB (via approximate conversion)
+    const l_ = L + 0.3963377774 * labA + 0.2158037573 * labB;
+    const m_ = L - 0.1055613458 * labA - 0.0638541728 * labB;
+    const s_ = L - 0.0894841775 * labA - 1.2914855480 * labB;
+
+    const l3 = l_ * l_ * l_;
+    const m3 = m_ * m_ * m_;
+    const s3 = s_ * s_ * s_;
+
+    const r = 4.0767416621 * l3 - 3.3077115913 * m3 + 0.2309699292 * s3;
+    const g = -1.2684380046 * l3 + 2.6097574011 * m3 - 0.3413193965 * s3;
+    const b = -0.0041960863 * l3 - 0.7034186147 * m3 + 1.7076147010 * s3;
+
+    // Clamp to 0-255
+    const clamp = (v: number) => Math.round(Math.min(255, Math.max(0, v * 255)));
+    return { r: clamp(r), g: clamp(g), b: clamp(b), a };
+  }
+
+  // Handle color-mix() — resolve by mixing two colors
+  const colorMixMatch = trimmed.match(
+    /color-mix\(\s*in\s+srgb\s*,\s*(.+?)\s+(\d+(?:\.\d+)?)%\s*,\s*(.+?)\s*\)/
+  );
+  if (colorMixMatch) {
+    const color1 = parseColor(colorMixMatch[1]);
+    const pct = parseFloat(colorMixMatch[2]) / 100;
+    const color2 = parseColor(colorMixMatch[3]);
+    if (color1 && color2) {
+      return {
+        r: Math.round(color1.r * pct + color2.r * (1 - pct)),
+        g: Math.round(color1.g * pct + color2.g * (1 - pct)),
+        b: Math.round(color1.b * pct + color2.b * (1 - pct)),
+        a: (color1.a ?? 1) * pct + (color2.a ?? 1) * (1 - pct),
+      };
+    }
+  }
+
   return null;
 }
 

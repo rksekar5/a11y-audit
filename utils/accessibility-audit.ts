@@ -82,11 +82,16 @@ export class AccessibilityAudit {
     includeExperimental?: boolean;
     exclude?: string[];
     screenshotDir?: string; // if provided, captures screenshots for visual issues
+    /** Disable specific rules by name (e.g., ['heading-multiple-h1', 'landmark-nav-missing']) */
+    disableRules?: string[];
+    /** Path to a baseline file — violations matching baseline entries won't be reported */
+    baselinePath?: string;
   }): Promise<A11yAuditResult> {
     this.violations = [];
 
     const level = options?.wcagLevel ?? 'AA';
     const exclude = options?.exclude ?? [];
+    const disabledRules = new Set(options?.disableRules ?? []);
 
     // 1. Run axe-core with ALL rules (not just tagged ones)
     await this.runAxeCore(level, exclude);
@@ -116,6 +121,8 @@ export class AccessibilityAudit {
       { name: 'autoplay-media', fn: () => this.checkAutoplayMedia() },
       { name: 'status-messages', fn: () => this.checkStatusMessages() },
       { name: 'duplicate-ids', fn: () => this.checkDuplicateIds() },
+      { name: 'focus-not-obscured', fn: () => this.checkFocusNotObscured() },
+      { name: 'aria-widget-interaction', fn: () => this.checkAriaWidgetInteraction() },
     ];
 
     if (options?.includeExperimental) {
@@ -144,6 +151,16 @@ export class AccessibilityAudit {
 
     // Deduplicate violations: same rule + same first element = duplicate
     this.deduplicateViolations();
+
+    // Filter out disabled rules
+    if (disabledRules.size > 0) {
+      this.violations = this.violations.filter(v => !disabledRules.has(v.rule));
+    }
+
+    // Filter out baseline violations
+    if (options?.baselinePath) {
+      this.applyBaseline(options.baselinePath);
+    }
 
     // Capture screenshots for visual-category violations
     if (options?.screenshotDir) {
@@ -240,6 +257,42 @@ export class AccessibilityAudit {
     }
 
     this.violations = unique;
+  }
+
+  /**
+   * Apply a baseline file to filter out known/accepted violations.
+   * Baseline format: JSON array of { rule, elementSubstring? } objects.
+   */
+  private applyBaseline(baselinePath: string) {
+    try {
+      const raw = fs.readFileSync(baselinePath, 'utf-8');
+      const baseline: Array<{ rule: string; elementSubstring?: string }> = JSON.parse(raw);
+
+      this.violations = this.violations.filter(v => {
+        return !baseline.some(b => {
+          if (b.rule !== v.rule) return false;
+          if (b.elementSubstring) {
+            return v.elements.some(el => el.includes(b.elementSubstring!));
+          }
+          return true; // Rule matches with no element filter = suppress all instances
+        });
+      });
+    } catch {
+      // If baseline file doesn't exist or is invalid, skip silently
+    }
+  }
+
+  /**
+   * Generate a baseline file from current violations.
+   * Call this to snapshot current state as "accepted" for incremental adoption.
+   */
+  static generateBaseline(results: A11yAuditResult, outputPath: string): void {
+    const baseline = results.violations.map(v => ({
+      rule: v.rule,
+      elementSubstring: v.elements[0]?.substring(0, 80) || undefined,
+    }));
+    fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+    fs.writeFileSync(outputPath, JSON.stringify(baseline, null, 2));
   }
 
   private async runAxeCore(level: string, exclude: string[]) {
@@ -1205,13 +1258,14 @@ export class AccessibilityAudit {
 
   /**
    * WCAG 1.4.12 — Text spacing override test
+   * Injects text spacing overrides, waits for layout flush, then checks for clipping.
    */
   private async checkTextSpacing() {
     const viewport = this.page.viewportSize();
     if (!viewport) return;
 
-    // Apply WCAG 1.4.12 text spacing overrides
-    const clippedContent = await this.page.evaluate(() => {
+    // Inject the text spacing style
+    await this.page.evaluate(() => {
       const style = document.createElement('style');
       style.id = 'a11y-text-spacing-test';
       style.textContent = `
@@ -1223,8 +1277,15 @@ export class AccessibilityAudit {
         p { margin-bottom: 2em !important; }
       `;
       document.head.appendChild(style);
+    });
 
-      // Check for clipped/overlapping content
+    // Wait for layout to flush (requestAnimationFrame + microtask)
+    await this.page.evaluate(() => new Promise<void>(resolve => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    }));
+
+    // Now measure clipping
+    const clippedContent = await this.page.evaluate(() => {
       const issues: string[] = [];
       const elements = document.querySelectorAll('*');
       for (const el of elements) {
@@ -1236,10 +1297,12 @@ export class AccessibilityAudit {
           }
         }
       }
-
-      // Clean up
-      document.getElementById('a11y-text-spacing-test')?.remove();
       return issues.slice(0, 5);
+    });
+
+    // Clean up
+    await this.page.evaluate(() => {
+      document.getElementById('a11y-text-spacing-test')?.remove();
     });
 
     if (clippedContent.length > 0) {
@@ -1679,6 +1742,227 @@ export class AccessibilityAudit {
         elements: [`[id="${dup.id}"]`],
         selectors: [],
         howToFix: 'Ensure all id attribute values are unique on the page.',
+      });
+    }
+  }
+
+  /**
+   * WCAG 2.4.11 (2.2) — Focus Not Obscured (Minimum)
+   * Checks if focused elements are hidden behind fixed/sticky positioned elements.
+   */
+  private async checkFocusNotObscured() {
+    const obscuredIssues = await this.page.evaluate(() => {
+      const issues: { html: string; obscuredBy: string }[] = [];
+
+      // Find all fixed/sticky elements that could obscure focus
+      const allElements = document.querySelectorAll('*');
+      const fixedElements: { el: Element; rect: DOMRect }[] = [];
+      for (const el of allElements) {
+        const style = window.getComputedStyle(el);
+        if (style.position === 'fixed' || style.position === 'sticky') {
+          const rect = el.getBoundingClientRect();
+          if (rect.width > 0 && rect.height > 0) {
+            fixedElements.push({ el, rect });
+          }
+        }
+      }
+
+      if (fixedElements.length === 0) return issues;
+
+      // Tab through focusable elements and check if they're obscured
+      const focusable = document.querySelectorAll(
+        'a[href], button, input:not([type="hidden"]), select, textarea, [tabindex="0"]'
+      );
+
+      const sample = Array.from(focusable).filter(
+        el => (el as HTMLElement).offsetParent !== null
+      ).slice(0, 30);
+
+      for (const el of sample) {
+        (el as HTMLElement).focus();
+        const focusedRect = el.getBoundingClientRect();
+        if (focusedRect.width === 0 || focusedRect.height === 0) continue;
+
+        for (const fixed of fixedElements) {
+          // Check if the fixed element overlaps the focused element
+          const overlap = !(
+            fixed.rect.right < focusedRect.left ||
+            fixed.rect.left > focusedRect.right ||
+            fixed.rect.bottom < focusedRect.top ||
+            fixed.rect.top > focusedRect.bottom
+          );
+
+          if (overlap) {
+            // Check if the fixed element is on top (higher z-index or later in DOM)
+            const fixedZ = parseInt(window.getComputedStyle(fixed.el).zIndex) || 0;
+            const focusedZ = parseInt(window.getComputedStyle(el).zIndex) || 0;
+            if (fixedZ >= focusedZ) {
+              issues.push({
+                html: el.outerHTML.substring(0, 150),
+                obscuredBy: fixed.el.outerHTML.substring(0, 100),
+              });
+              break; // One issue per focused element is enough
+            }
+          }
+        }
+      }
+
+      // Blur last element
+      (document.activeElement as HTMLElement)?.blur();
+      return issues.slice(0, 10);
+    });
+
+    for (const issue of obscuredIssues) {
+      this.violations.push({
+        rule: 'focus-not-obscured',
+        impact: 'serious',
+        description: `Focused element is obscured by a fixed/sticky positioned element.`,
+        wcagCriteria: ['wcag2411'],
+        elements: [issue.html],
+        selectors: [],
+        howToFix: `Ensure focused elements are not hidden behind fixed headers, footers, or overlays. Use scroll-padding or scroll-margin to offset. Obscured by: ${issue.obscuredBy.substring(0, 60)}`,
+      });
+    }
+  }
+
+  /**
+   * WCAG 4.1.2 / APG — ARIA Widget Interaction Patterns
+   * Verifies common ARIA widgets respond to expected keyboard patterns:
+   * - Tablists: arrow keys move between tabs
+   * - Dialogs: Escape closes them
+   * - Menus: Enter activates items, Escape closes
+   */
+  private async checkAriaWidgetInteraction() {
+    // Test tablist arrow key navigation
+    const tablistIssues = await this.page.evaluate(() => {
+      const issues: { html: string; issue: string }[] = [];
+      const tablists = document.querySelectorAll('[role="tablist"]');
+
+      for (const tablist of tablists) {
+        const tabs = Array.from(tablist.querySelectorAll('[role="tab"]'));
+        if (tabs.length < 2) continue;
+
+        // Check if tabs have proper tabindex management
+        const focusableTabs = tabs.filter(t => (t as HTMLElement).tabIndex >= 0);
+        const unfocusableTabs = tabs.filter(t => (t as HTMLElement).tabIndex < 0);
+
+        // In a well-implemented tablist, only the active tab has tabindex=0
+        // and the rest have tabindex=-1 (roving tabindex pattern)
+        if (focusableTabs.length > 1) {
+          // All tabs are focusable = not using roving tabindex
+          // Check if they at least have aria-selected
+          const selectedTabs = tabs.filter(t => t.getAttribute('aria-selected') === 'true');
+          if (selectedTabs.length === 0) {
+            issues.push({
+              html: tablist.outerHTML.substring(0, 150),
+              issue: 'tablist-no-keyboard-pattern',
+            });
+          }
+        }
+
+        // Check that tabs have keydown handlers (or parent does)
+        const hasKeyHandler = tablist.hasAttribute('onkeydown') ||
+          tabs.some(t => t.hasAttribute('onkeydown') || t.hasAttribute('onkeyup'));
+        if (!hasKeyHandler && focusableTabs.length === tabs.length) {
+          issues.push({
+            html: tablist.outerHTML.substring(0, 150),
+            issue: 'tablist-no-arrow-key-support',
+          });
+        }
+      }
+      return issues;
+    });
+
+    for (const issue of tablistIssues) {
+      this.violations.push({
+        rule: 'aria-tablist-keyboard',
+        impact: issue.issue === 'tablist-no-arrow-key-support' ? 'serious' : 'moderate',
+        description: issue.issue === 'tablist-no-arrow-key-support'
+          ? 'Tablist does not appear to support arrow key navigation between tabs (APG pattern).'
+          : 'Tablist has no selected tab and does not use roving tabindex pattern.',
+        wcagCriteria: ['wcag412', 'wcag211'],
+        elements: [issue.html],
+        selectors: [],
+        howToFix: 'Implement roving tabindex: active tab has tabindex="0", others tabindex="-1". Arrow Left/Right moves focus between tabs.',
+      });
+    }
+
+    // Test dialog Escape key
+    const dialogIssues = await this.page.evaluate(() => {
+      const issues: string[] = [];
+      const dialogs = document.querySelectorAll('[role="dialog"], [role="alertdialog"], dialog');
+
+      for (const dialog of dialogs) {
+        // Only check visible dialogs
+        const htmlDialog = dialog as HTMLElement;
+        if (!htmlDialog.offsetParent && !(dialog as HTMLDialogElement).open) continue;
+
+        // Check if dialog (or any ancestor) has a keydown handler for Escape
+        let hasEscapeHandler = false;
+        let current: Element | null = dialog;
+        while (current) {
+          if (current.hasAttribute('onkeydown') || current.hasAttribute('onkeyup')) {
+            hasEscapeHandler = true;
+            break;
+          }
+          current = current.parentElement;
+        }
+
+        // Native <dialog> elements handle Escape natively
+        if (dialog.tagName === 'DIALOG') hasEscapeHandler = true;
+
+        // Check for a close button as fallback
+        const closeBtn = dialog.querySelector('[aria-label*="close" i], [aria-label*="dismiss" i], button.close, .dialog-close');
+        if (!hasEscapeHandler && !closeBtn) {
+          issues.push(dialog.outerHTML.substring(0, 150));
+        }
+      }
+      return issues;
+    });
+
+    for (const html of dialogIssues) {
+      this.violations.push({
+        rule: 'aria-dialog-no-escape',
+        impact: 'serious',
+        description: 'Dialog has no apparent mechanism to close via Escape key and no visible close button.',
+        wcagCriteria: ['wcag412', 'wcag211'],
+        elements: [html],
+        selectors: [],
+        howToFix: 'Add a keydown listener on the dialog that closes it when Escape is pressed, or use the native <dialog> element.',
+      });
+    }
+
+    // Test menu/menubar patterns
+    const menuIssues = await this.page.evaluate(() => {
+      const issues: string[] = [];
+      const menus = document.querySelectorAll('[role="menu"], [role="menubar"]');
+
+      for (const menu of menus) {
+        const items = menu.querySelectorAll('[role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]');
+        if (items.length === 0) {
+          issues.push(menu.outerHTML.substring(0, 150));
+          continue;
+        }
+
+        // Check roving tabindex pattern
+        const allTabIndexZero = Array.from(items).every(i => (i as HTMLElement).tabIndex >= 0);
+        if (allTabIndexZero && items.length > 1) {
+          // All items are independently focusable = not following APG menu pattern
+          issues.push(menu.outerHTML.substring(0, 150));
+        }
+      }
+      return issues.slice(0, 5);
+    });
+
+    for (const html of menuIssues) {
+      this.violations.push({
+        rule: 'aria-menu-keyboard',
+        impact: 'moderate',
+        description: 'Menu widget does not follow APG keyboard pattern (roving tabindex with arrow key navigation).',
+        wcagCriteria: ['wcag412'],
+        elements: [html],
+        selectors: [],
+        howToFix: 'Implement APG menu pattern: only first/active item has tabindex="0", use arrow keys to navigate, Enter to activate, Escape to close.',
       });
     }
   }
